@@ -1,0 +1,15 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(int argc, char **argv) {
+    if (argc != 2) {
+        fprintf(stderr, "%s: invalid number of arguments\n", argv[0]);
+        return 1;
+    }
+
+    printf(".globl main\n");
+    printf("main:\n");
+    printf("  mov $%ld, %%rax\n", strtol(argv[1], NULL, 10));
+    printf("  ret\n");
+    return 0;
+}

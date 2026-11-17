@@ -1,0 +1,5 @@
+mibicc
+*.o
+*.s
+tmp*
+*~
