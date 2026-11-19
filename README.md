@@ -28,7 +28,7 @@ A tiny C99 compiler written in C, targeting x86-64 Linux.
 
 - [x] **Step 1:** Integer constants and process exit codes (`mov $N, %rax; ret`)
 - [x] **Step 2:** Basic arithmetic (`+`, `-`)
-- [ ] **Step 3:** Tokenizer and whitespace handling
+- [x] **Step 3:** Tokenizer and whitespace handling
 - [ ] **Step 4:** Operator precedence (`*`, `/`, parentheses)
 - [ ] **Step 5:** Unary operators (`+`, `-`)
 - [ ] **Step 6:** Equality and relational comparisons (`==`, `!=`, `<`, `<=`, `>`, `>=`)
