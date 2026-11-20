@@ -32,4 +32,17 @@ assert 150 " 100 +   200  -  150 "
 assert 5 "1 + 2 + 3 + 4 - 5"
 assert 10 "0 + 10"
 
+# Operator precedence (*, /)
+assert 47 "5+6*7"
+assert 15 "5*(9-6)"
+assert 4 "(3+5)/2"
+assert 29 "10 + 20 / 2 * 2 - 1"
+assert 10 "2 * 5"
+assert 3 "12 / 4"
+assert 26 "2 * (3 + (4 * 2) + 2)"
+assert 4 "((2 + 2))"
+assert 2 "(4 - 2) * (3 - 2)"
+assert 100 "(10 * 10)"
+assert 1 "100 / 10 / 10"
+
 echo OK
