@@ -16,6 +16,24 @@ assert() {
   fi
 }
 
+assert_target() {
+  expected="$1"
+  target="$2"
+  input="$3"
+
+  ./mibicc "--target=$target" "$input" > tmp.s
+  gcc -static -o tmp tmp.s
+  ./tmp
+  actual="$?"
+
+  if [ "$actual" = "$expected" ]; then
+    echo "[$target] $input => $actual"
+  else
+    echo "[$target] $input => $expected expected, but got $actual"
+    exit 1
+  fi
+}
+
 # Basic constants
 assert 0 0
 assert 42 42
@@ -44,5 +62,9 @@ assert 4 "((2 + 2))"
 assert 2 "(4 - 2) * (3 - 2)"
 assert 100 "(10 * 10)"
 assert 1 "100 / 10 / 10"
+
+# Explicit target flags
+assert_target 42 "linux" "40 + 2"
+assert_target 42 "windows" "6 * 7"
 
 echo OK

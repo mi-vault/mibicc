@@ -5,6 +5,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Target operating system ABI
+typedef enum {
+    TARGET_LINUX,   // System V AMD64 ABI (Linux, BSD, macOS)
+    TARGET_WINDOWS, // Microsoft x64 ABI (Windows)
+} TargetOS;
+
+#ifdef _WIN32
+static TargetOS target_os = TARGET_WINDOWS;
+#else
+static TargetOS target_os = TARGET_LINUX;
+#endif
+
 // Token kind
 typedef enum {
     TK_RESERVED, // Keywords or punctuators (+, -, *, /, (, ))
@@ -243,11 +255,42 @@ static void gen(Node *node) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 2) {
-        error("%s: invalid number of arguments", argv[0]);
+    if (argc < 2) {
+        error("usage: %s [--target=linux|windows] <expression>", argv[0]);
     }
 
-    user_input = argv[1];
+    int arg_idx = 1;
+    while (arg_idx < argc && argv[arg_idx][0] == '-') {
+        if (strcmp(argv[arg_idx], "-h") == 0 || strcmp(argv[arg_idx], "--help") == 0) {
+            printf("Usage: %s [options] <expression>\n", argv[0]);
+            printf("Options:\n");
+            printf("  --target=linux    Emit assembly for x86-64 Linux (System V AMD64 ABI)\n");
+            printf("  --target=windows  Emit assembly for x86-64 Windows (Microsoft x64 ABI)\n");
+            printf("  -h, --help        Show this help message\n");
+            return 0;
+        }
+
+        if (strncmp(argv[arg_idx], "--target=", 9) == 0) {
+            char *target = argv[arg_idx] + 9;
+            if (strcmp(target, "linux") == 0) {
+                target_os = TARGET_LINUX;
+            } else if (strcmp(target, "windows") == 0) {
+                target_os = TARGET_WINDOWS;
+            } else {
+                error("unknown target: %s (supported: linux, windows)", target);
+            }
+            arg_idx++;
+            continue;
+        }
+
+        error("unknown option: %s", argv[arg_idx]);
+    }
+
+    if (arg_idx >= argc) {
+        error("expected expression argument");
+    }
+
+    user_input = argv[arg_idx];
     token = tokenize(user_input);
 
     Node *node = expr();
