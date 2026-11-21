@@ -41,6 +41,7 @@ typedef enum {
     ND_SUB, // -
     ND_MUL, // *
     ND_DIV, // /
+    ND_NEG, // Unary -
     ND_NUM, // Integer
 } NodeKind;
 
@@ -179,6 +180,7 @@ static Node *new_node_num(long val) {
 // Parser forward declarations
 static Node *expr(void);
 static Node *mul(void);
+static Node *unary(void);
 static Node *primary(void);
 
 // primary = "(" expr ")" | num
@@ -192,15 +194,24 @@ static Node *primary(void) {
     return new_node_num(expect_number());
 }
 
-// mul = primary ("*" primary | "/" primary)*
+// unary = ("+" | "-") unary | primary
+static Node *unary(void) {
+    if (consume('+'))
+        return unary();
+    if (consume('-'))
+        return new_node(ND_NEG, unary(), NULL);
+    return primary();
+}
+
+// mul = unary ("*" unary | "/" unary)*
 static Node *mul(void) {
-    Node *node = primary();
+    Node *node = unary();
 
     for (;;) {
         if (consume('*'))
-            node = new_node(ND_MUL, node, primary());
+            node = new_node(ND_MUL, node, unary());
         else if (consume('/'))
-            node = new_node(ND_DIV, node, primary());
+            node = new_node(ND_DIV, node, unary());
         else
             return node;
     }
@@ -224,6 +235,14 @@ static Node *expr(void) {
 static void gen(Node *node) {
     if (node->kind == ND_NUM) {
         printf("  push $%ld\n", node->val);
+        return;
+    }
+
+    if (node->kind == ND_NEG) {
+        gen(node->lhs);
+        printf("  pop %%rax\n");
+        printf("  neg %%rax\n");
+        printf("  push %%rax\n");
         return;
     }
 

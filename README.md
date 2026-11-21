@@ -62,7 +62,7 @@ echo $?  # Outputs the evaluated result
 - [x] **Step 2:** Basic arithmetic (`+`, `-`)
 - [x] **Step 3:** Tokenizer with whitespace handling and visual caret diagnostics
 - [x] **Step 4:** Operator precedence (`*`, `/`, nested parentheses) & cross-platform targets
-- [ ] **Step 5:** Unary operators (`+`, `-`)
+- [x] **Step 5:** Unary operators (`+`, `-`)
 - [ ] **Step 6:** Equality and relational comparisons (`==`, `!=`, `<`, `<=`, `>`, `>=`)
 - [ ] **Step 7:** Local variables and assignment
 - [ ] **Step 8:** Statements and semicolons (`return`)

@@ -67,4 +67,19 @@ assert 1 "100 / 10 / 10"
 assert_target 42 "linux" "40 + 2"
 assert_target 42 "windows" "6 * 7"
 
+# Unary operators (+, -)
+assert 10 "-10 + 20"
+assert 10 "- -10"
+assert 10 "- - +10"
+assert 42 "+42"
+assert 0 "+0"
+assert 15 "-3 * -5"
+assert 4 "-(3 + 5) + 12"
+assert 20 "-(-10 * 2)"
+assert 5 "- - - -5 + 10"
+assert 10 "+ +10"
+assert 1 "(-10 + 20) / 10"
+assert_target 10 "linux" "-10 + 20"
+assert_target 15 "windows" "-3 * -5"
+
 echo OK
