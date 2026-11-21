@@ -279,7 +279,12 @@ int main(int argc, char **argv) {
     }
 
     int arg_idx = 1;
-    while (arg_idx < argc && argv[arg_idx][0] == '-') {
+    while (arg_idx < argc) {
+        if (strcmp(argv[arg_idx], "--") == 0) {
+            arg_idx++;
+            break;
+        }
+
         if (strcmp(argv[arg_idx], "-h") == 0 || strcmp(argv[arg_idx], "--help") == 0) {
             printf("Usage: %s [options] <expression>\n", argv[0]);
             printf("Options:\n");
@@ -302,7 +307,11 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        error("unknown option: %s", argv[arg_idx]);
+        if (strncmp(argv[arg_idx], "--", 2) == 0) {
+            error("unknown option: %s", argv[arg_idx]);
+        }
+
+        break;
     }
 
     if (arg_idx >= argc) {
