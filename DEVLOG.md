@@ -109,3 +109,45 @@ int stack_size = ((nlocals * 8) + 15) & ~15;
 ### Statement Discarding & Return Semantics:
 In multi-statement programs (`stmt; stmt; ...`), every statement pushes its final result onto the stack. To prevent stack leakage across statements, all intermediate results are discarded with `pop %rax` except for the final statement, whose value remains in `%rax` as the program's exit code.
 
+---
+
+## 7. Architectural Models: Vertical Slicing vs. Horizontal Staging
+
+Reflections prompted by technical discussions with fellow compiler authors in the community (notably Marc Jacob, author of `MarcJacob/C-Compiler`).
+
+### The Two Methodologies:
+- **Horizontal Staging**: Build the compiler phase-by-phase across the entire grammar before generating code (Full Tokenizer -> Full AST / Parser -> Semantic Analysis / Type Solver -> Code Generator).
+  - *Advantage*: High architectural purity early on; data structures and module boundaries are designed with full foresight of standard requirements.
+  - *Drawback*: Months of development before the first binary executes; codegen surprises (ABI quirks, register allocation bottlenecks) are deferred to the very end.
+- **Vertical Slicing (mibicc approach)**: Build thin, end-to-end slices from source text directly to runnable machine code and execution verification, incrementally widening the supported grammar.
+  - *Advantage*: Immediate feedback loop and psychological momentum; real-world ABI constraints (Windows 32-byte shadow space, System V vs MS x64 register passing) are confronted and solved at Step 1 rather than deferred.
+  - *Drawback*: Refactoring tax. When fundamental abstractions evolve (e.g. adding static types or struct layouts), changes must ripple through every stage (lexer, AST, codegen) simultaneously.
+
+### The C Declaration Grammar Revelation:
+In standard C99, top-level grammar fundamentally reduces to object declarations:
+```
+[storage-class / typedef] [type-specifier] [declarator-list];
+```
+Because type definitions and object instantiations share the same declaration specifier grammar, C permits seemingly convoluted constructs where types are defined in-place during declarator evaluation:
+```c
+typedef enum { VAL_1, VAL_2 } array_of_anonymous_enum[25];
+
+struct foo {
+    int result;
+    const char *str;
+    array_of_anonymous_enum array;
+} bar(int a, int b) {
+    // Valid C function definition declaring return struct type simultaneously
+    return (struct foo){ a + b, "valid C99", {0} };
+}
+```
+Understanding that declarations always follow this pattern collapses what initially appears to be a fragmented parsing tree into a coherent state machine: identify the type specifier, then iterate through comma-separated declarators (pointers, identifiers, array bounds, parameter lists) until terminating at a semicolon or a function body `{`.
+
+### The Modularity Threshold:
+While keeping `mibicc` in a single translation unit (`src/main.c`) enabled rapid prototyping through Step 7, scaling past Step 10 (types, pointers, and structs) will necessitate modularizing into distinct files:
+- `tokenize.c` (lexer and caret diagnostics)
+- `parse.c` (recursive descent and AST construction)
+- `type.c` (type checker and implicit promotions)
+- `codegen.c` (ABI-specific assembly emission)
+
+
