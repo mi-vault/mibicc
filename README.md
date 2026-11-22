@@ -9,6 +9,8 @@ A tiny C99 compiler written in C, targeting both x86-64 Linux (System V AMD64 AB
 
 `mibicc` is an educational, dependency-free C compiler designed to be clean, readable, and incrementally verifiable. Unlike many hobby compilers that are hardcoded to the Linux System V ABI, `mibicc` supports target selection for both Linux and Windows environments.
 
+Detailed architectural decisions, edge cases, and learnings are documented in the [Lab Notebook](DEVLOG.md).
+
 ## Architecture
 
 `mibicc` is constructed incrementally following modern compiler construction principles:
