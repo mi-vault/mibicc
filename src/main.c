@@ -19,7 +19,8 @@ static TargetOS target_os = TARGET_LINUX;
 
 // Token kind
 typedef enum {
-    TK_RESERVED, // Keywords or punctuators (+, -, *, /, (, ))
+    TK_RESERVED, // Keywords or punctuators (+, -, *, /, (, ), etc.)
+    TK_IDENT,    // Identifiers (single lowercase letter a-z)
     TK_NUM,      // Integer literals
     TK_EOF,      // End-of-file markers
 } TokenKind;
@@ -37,17 +38,28 @@ struct Token {
 
 // AST Node kind
 typedef enum {
-    ND_ADD, // +
-    ND_SUB, // -
-    ND_MUL, // *
-    ND_DIV, // /
-    ND_EQ,  // ==
-    ND_NE,  // !=
-    ND_LT,  // <
-    ND_LE,  // <=
-    ND_NEG, // Unary -
-    ND_NUM, // Integer
+    ND_ADD,    // +
+    ND_SUB,    // -
+    ND_MUL,    // *
+    ND_DIV,    // /
+    ND_EQ,     // ==
+    ND_NE,     // !=
+    ND_LT,     // <
+    ND_LE,     // <=
+    ND_NEG,    // Unary -
+    ND_ASSIGN, // =
+    ND_VAR,    // Variable reference
+    ND_NUM,    // Integer
 } NodeKind;
+
+// Local variable
+typedef struct Var Var;
+
+struct Var {
+    char name;    // Single lowercase letter (a-z)
+    int offset;   // Offset from %rbp (negative, e.g. -8, -16, ...)
+    Var *next;    // Next variable in the linked list
+};
 
 // AST Node type
 typedef struct Node Node;
@@ -57,6 +69,7 @@ struct Node {
     Node *lhs;     // Left-hand side
     Node *rhs;     // Right-hand side
     long val;      // Used if kind == ND_NUM
+    Var *var;      // Used if kind == ND_VAR
 };
 
 // Input program string
@@ -64,6 +77,9 @@ static char *user_input;
 
 // Current token
 static Token *token;
+
+// All local variables created during parsing
+static Var *locals;
 
 // Reports an error and exits
 static void error(char *fmt, ...) {
@@ -159,7 +175,7 @@ static Token *tokenize(char *p) {
             continue;
         }
 
-        // Single-character punctuators (+, -, *, /, (, ), <, >)
+        // Single-character punctuators (+, -, *, /, (, ), <, >, =, ;)
         if (strchr("+-*/()<>=;", *p)) {
             cur = new_token(TK_RESERVED, cur, p++, 1);
             continue;
@@ -174,11 +190,38 @@ static Token *tokenize(char *p) {
             continue;
         }
 
+        // Single lowercase letter identifier
+        if ('a' <= *p && *p <= 'z') {
+            cur = new_token(TK_IDENT, cur, p++, 1);
+            continue;
+        }
+
         error_at(p, "invalid token");
     }
 
     new_token(TK_EOF, cur, p, 0);
     return head.next;
+}
+
+// Finds or creates a local variable by name
+static Var *find_or_create_var(char name) {
+    // Search existing variables
+    for (Var *v = locals; v; v = v->next) {
+        if (v->name == name)
+            return v;
+    }
+
+    // Allocate a new variable with the next stack slot
+    Var *v = calloc(1, sizeof(Var));
+    v->name = name;
+    // Each variable occupies 8 bytes, offsets go -8, -16, -24, ...
+    int count = 0;
+    for (Var *x = locals; x; x = x->next)
+        count++;
+    v->offset = (count + 1) * -8;
+    v->next = locals;
+    locals = v;
+    return v;
 }
 
 // Creates a new binary operator node
@@ -198,8 +241,17 @@ static Node *new_node_num(long val) {
     return node;
 }
 
+// Creates a new variable node
+static Node *new_node_var(Var *var) {
+    Node *node = calloc(1, sizeof(Node));
+    node->kind = ND_VAR;
+    node->var = var;
+    return node;
+}
+
 // Parser forward declarations
 static Node *expr(void);
+static Node *assign(void);
 static Node *equality(void);
 static Node *relational(void);
 static Node *add(void);
@@ -207,12 +259,18 @@ static Node *mul(void);
 static Node *unary(void);
 static Node *primary(void);
 
-// primary = "(" expr ")" | num
+// primary = "(" expr ")" | num | ident
 static Node *primary(void) {
     if (consume("(")) {
         Node *node = expr();
         expect(")");
         return node;
+    }
+
+    if (token->kind == TK_IDENT) {
+        Var *var = find_or_create_var(*token->loc);
+        token = token->next;
+        return new_node_var(var);
     }
 
     return new_node_num(expect_number());
@@ -289,24 +347,68 @@ static Node *equality(void) {
     }
 }
 
-// expr = equality
+// assign = equality ("=" assign)?
+static Node *assign(void) {
+    Node *node = equality();
+    if (consume("="))
+        node = new_node(ND_ASSIGN, node, assign());
+    return node;
+}
+
+// expr = assign
 static Node *expr(void) {
-    return equality();
+    return assign();
+}
+
+// stmt = expr ";"
+static Node *stmt(void) {
+    Node *node = expr();
+    expect(";");
+    return node;
+}
+
+// Code generator: pushes the address of a variable onto the stack
+static void gen_addr(Node *node) {
+    if (node->kind != ND_VAR)
+        error("not an lvalue");
+    printf("  lea %d(%%rbp), %%rax\n", node->var->offset);
+    printf("  push %%rax\n");
 }
 
 // Code generator: evaluates AST using a stack machine
 static void gen(Node *node) {
-    if (node->kind == ND_NUM) {
+    switch (node->kind) {
+    case ND_NUM:
         printf("  push $%ld\n", node->val);
         return;
-    }
 
-    if (node->kind == ND_NEG) {
+    case ND_VAR:
+        // Push the variable's address, then load from memory
+        gen_addr(node);
+        printf("  pop %%rax\n");
+        printf("  mov (%%rax), %%rax\n");
+        printf("  push %%rax\n");
+        return;
+
+    case ND_ASSIGN:
+        // Push address of lhs, evaluate rhs, store result
+        gen_addr(node->lhs);
+        gen(node->rhs);
+        printf("  pop %%rdi\n");   // rhs value
+        printf("  pop %%rax\n");   // lhs address
+        printf("  mov %%rdi, (%%rax)\n");
+        printf("  push %%rdi\n");  // assignment expression evaluates to rhs
+        return;
+
+    case ND_NEG:
         gen(node->lhs);
         printf("  pop %%rax\n");
         printf("  neg %%rax\n");
         printf("  push %%rax\n");
         return;
+
+    default:
+        break;
     }
 
     gen(node->lhs);
@@ -358,7 +460,7 @@ static void gen(Node *node) {
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        error("usage: %s [--target=linux|windows] <expression>", argv[0]);
+        error("usage: %s [--target=linux|windows] <program>", argv[0]);
     }
 
     int arg_idx = 1;
@@ -369,7 +471,7 @@ int main(int argc, char **argv) {
         }
 
         if (strcmp(argv[arg_idx], "-h") == 0 || strcmp(argv[arg_idx], "--help") == 0) {
-            printf("Usage: %s [options] <expression>\n", argv[0]);
+            printf("Usage: %s [options] <program>\n", argv[0]);
             printf("Options:\n");
             printf("  --target=linux    Emit assembly for x86-64 Linux (System V AMD64 ABI)\n");
             printf("  --target=windows  Emit assembly for x86-64 Windows (Microsoft x64 ABI)\n");
@@ -398,27 +500,49 @@ int main(int argc, char **argv) {
     }
 
     if (arg_idx >= argc) {
-        error("expected expression argument");
+        error("expected program argument");
     }
 
     user_input = argv[arg_idx];
     token = tokenize(user_input);
 
-    Node *node = expr();
-
-    if (!at_eof()) {
-        error_at(token->loc, "stray token after expression");
+    // Parse all statements
+    Node *stmts[100];
+    int nstmts = 0;
+    while (!at_eof()) {
+        stmts[nstmts++] = stmt();
     }
+
+    // Count locals and compute stack size (round up to 16-byte alignment)
+    int nlocals = 0;
+    for (Var *v = locals; v; v = v->next)
+        nlocals++;
+    int stack_size = ((nlocals * 8) + 15) & ~15; // align to 16 bytes
 
     printf(".globl main\n");
     printf("main:\n");
 
-    // Traverse the AST to emit assembly
-    gen(node);
+    // Function prologue
+    printf("  push %%rbp\n");
+    printf("  mov %%rsp, %%rbp\n");
+    if (stack_size > 0)
+        printf("  sub $%d, %%rsp\n", stack_size);
 
-    // The result of the expression is on top of the stack.
-    // Pop it into %rax to be the return value of main.
+    // Emit code for each statement; result of last statement stays in %rax
+    for (int i = 0; i < nstmts; i++) {
+        gen(stmts[i]);
+        // Discard intermediate results (keep stack balanced)
+        // The result of the last statement is intentionally left on the stack
+        if (i < nstmts - 1)
+            printf("  pop %%rax\n");
+    }
+
+    // Pop final result into %rax (return value)
     printf("  pop %%rax\n");
+
+    // Function epilogue
+    printf("  mov %%rbp, %%rsp\n");
+    printf("  pop %%rbp\n");
     printf("  ret\n");
     return 0;
 }

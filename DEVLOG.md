@@ -68,3 +68,44 @@ return 10 * x + y; // Evaluates to 39
 
 ### Two-Stack vs. Standard Call Stack
 Discussed the tradeoffs of dual-stack machines (one stack for expression evaluation, one for call frames/locals) vs. single hardware stack. While dual stacks simplify temporary bookkeeping, adhering to the single hardware stack with `%rbp` offsets is necessary for standard C library interoperability (`printf`, `malloc`, libc).
+
+---
+
+## 5. Boolean Comparison Sequence & The Operand Swap Trick
+
+Step 6 introduced comparison and relational operators (`==`, `!=`, `<`, `<=`, `>`, `>=`).
+
+### Two-Step Comparison Pattern:
+In x86-64 assembly, comparison instructions (`cmp`) update condition flags (ZF, SF, OF, CF) rather than placing a boolean 0 or 1 directly in a general-purpose register. To produce a C-standard integer 0 or 1:
+```assembly
+cmp %rdi, %rax     # Compare operands
+setl %al           # Set %al byte to 1 if less, else 0
+movzb %al, %rax    # Zero-extend byte in %al to full 64-bit %rax
+```
+
+### The Operand Swap Trick:
+Instead of defining distinct AST nodes and code generation routines for greater-than (`>`) and greater-or-equal (`>=`), the parser swaps the left-hand and right-hand expressions:
+- `a > b` is structurally identical to `b < a` (`ND_LT` with swapped children).
+- `a >= b` is structurally identical to `b <= a` (`ND_LE` with swapped children).
+This halves the required comparison node kinds and assembly instructions without altering semantics.
+
+---
+
+## 6. Lvalues, Variable Offsets, and Stack Frame Management
+
+Step 7 added single-letter local variables (`a-z`), assignment (`=`), and multi-statement execution.
+
+### Lvalue vs. Rvalue Resolution:
+An lvalue represents a memory address that can be stored to, whereas an rvalue is a value computed by an expression:
+- When compiling an identifier on the left of an assignment (`a = 3`), `gen_addr()` computes the variable's memory address using `lea -offset(%rbp), %rax`.
+- When evaluating an identifier in an expression (`a + 2`), `gen()` calls `gen_addr()`, pops the address, and immediately dereferences it with `mov (%rax), %rax`.
+
+### Stack Frame Alignment:
+Every unique local variable allocates an 8-byte slot below the base pointer (`-8(%rbp)`, `-16(%rbp)`, etc.). To satisfy the 16-byte stack alignment mandated by both System V AMD64 and Windows x64 ABIs before potential function calls, the total local variable space is rounded up to the nearest multiple of 16:
+```c
+int stack_size = ((nlocals * 8) + 15) & ~15;
+```
+
+### Statement Discarding & Return Semantics:
+In multi-statement programs (`stmt; stmt; ...`), every statement pushes its final result onto the stack. To prevent stack leakage across statements, all intermediate results are discarded with `pop %rax` except for the final statement, whose value remains in `%rax` as the program's exit code.
+
