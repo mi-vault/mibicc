@@ -41,6 +41,10 @@ typedef enum {
     ND_SUB, // -
     ND_MUL, // *
     ND_DIV, // /
+    ND_EQ,  // ==
+    ND_NE,  // !=
+    ND_LT,  // <
+    ND_LE,  // <=
     ND_NEG, // Unary -
     ND_NUM, // Integer
 } NodeKind;
@@ -86,18 +90,27 @@ static void error_at(char *loc, char *fmt, ...) {
     exit(1);
 }
 
+// Returns true if string p starts with prefix q
+static bool startswith(char *p, char *q) {
+    return strncmp(p, q, strlen(q)) == 0;
+}
+
 // Consumes the current token if it matches op
-static bool consume(char op) {
-    if (token->kind != TK_RESERVED || token->loc[0] != op)
+static bool consume(char *op) {
+    if (token->kind != TK_RESERVED ||
+        (int)strlen(op) != token->len ||
+        memcmp(token->loc, op, token->len))
         return false;
     token = token->next;
     return true;
 }
 
 // Ensures that the current token is op
-static void expect(char op) {
-    if (token->kind != TK_RESERVED || token->loc[0] != op)
-        error_at(token->loc, "expected '%c'", op);
+static void expect(char *op) {
+    if (token->kind != TK_RESERVED ||
+        (int)strlen(op) != token->len ||
+        memcmp(token->loc, op, token->len))
+        error_at(token->loc, "expected '%s'", op);
     token = token->next;
 }
 
@@ -138,8 +151,16 @@ static Token *tokenize(char *p) {
             continue;
         }
 
-        // Operators (+, -, *, /, (, ))
-        if (strchr("+-*/()", *p)) {
+        // Multi-character punctuators (==, !=, <=, >=)
+        if (startswith(p, "==") || startswith(p, "!=") ||
+            startswith(p, "<=") || startswith(p, ">=")) {
+            cur = new_token(TK_RESERVED, cur, p, 2);
+            p += 2;
+            continue;
+        }
+
+        // Single-character punctuators (+, -, *, /, (, ), <, >)
+        if (strchr("+-*/()<>=;", *p)) {
             cur = new_token(TK_RESERVED, cur, p++, 1);
             continue;
         }
@@ -179,15 +200,18 @@ static Node *new_node_num(long val) {
 
 // Parser forward declarations
 static Node *expr(void);
+static Node *equality(void);
+static Node *relational(void);
+static Node *add(void);
 static Node *mul(void);
 static Node *unary(void);
 static Node *primary(void);
 
 // primary = "(" expr ")" | num
 static Node *primary(void) {
-    if (consume('(')) {
+    if (consume("(")) {
         Node *node = expr();
-        expect(')');
+        expect(")");
         return node;
     }
 
@@ -196,9 +220,9 @@ static Node *primary(void) {
 
 // unary = ("+" | "-") unary | primary
 static Node *unary(void) {
-    if (consume('+'))
+    if (consume("+"))
         return unary();
-    if (consume('-'))
+    if (consume("-"))
         return new_node(ND_NEG, unary(), NULL);
     return primary();
 }
@@ -208,27 +232,66 @@ static Node *mul(void) {
     Node *node = unary();
 
     for (;;) {
-        if (consume('*'))
+        if (consume("*"))
             node = new_node(ND_MUL, node, unary());
-        else if (consume('/'))
+        else if (consume("/"))
             node = new_node(ND_DIV, node, unary());
         else
             return node;
     }
 }
 
-// expr = mul ("+" mul | "-" mul)*
-static Node *expr(void) {
+// add = mul ("+" mul | "-" mul)*
+static Node *add(void) {
     Node *node = mul();
 
     for (;;) {
-        if (consume('+'))
+        if (consume("+"))
             node = new_node(ND_ADD, node, mul());
-        else if (consume('-'))
+        else if (consume("-"))
             node = new_node(ND_SUB, node, mul());
         else
             return node;
     }
+}
+
+// relational = add ("<" add | "<=" add | ">" add | ">=" add)*
+static Node *relational(void) {
+    Node *node = add();
+
+    for (;;) {
+        if (consume("<="))
+            node = new_node(ND_LE, node, add());
+        else if (consume("<"))
+            node = new_node(ND_LT, node, add());
+        else if (consume(">=")) {
+            Node *rhs = add();
+            node = new_node(ND_LE, rhs, node);
+        } else if (consume(">")) {
+            Node *rhs = add();
+            node = new_node(ND_LT, rhs, node);
+        } else
+            return node;
+    }
+}
+
+// equality = relational ("==" relational | "!=" relational)*
+static Node *equality(void) {
+    Node *node = relational();
+
+    for (;;) {
+        if (consume("=="))
+            node = new_node(ND_EQ, node, relational());
+        else if (consume("!="))
+            node = new_node(ND_NE, node, relational());
+        else
+            return node;
+    }
+}
+
+// expr = equality
+static Node *expr(void) {
+    return equality();
 }
 
 // Code generator: evaluates AST using a stack machine
@@ -265,6 +328,26 @@ static void gen(Node *node) {
     case ND_DIV:
         printf("  cqo\n");
         printf("  idiv %%rdi\n");
+        break;
+    case ND_EQ:
+        printf("  cmp %%rdi, %%rax\n");
+        printf("  sete %%al\n");
+        printf("  movzb %%al, %%rax\n");
+        break;
+    case ND_NE:
+        printf("  cmp %%rdi, %%rax\n");
+        printf("  setne %%al\n");
+        printf("  movzb %%al, %%rax\n");
+        break;
+    case ND_LT:
+        printf("  cmp %%rdi, %%rax\n");
+        printf("  setl %%al\n");
+        printf("  movzb %%al, %%rax\n");
+        break;
+    case ND_LE:
+        printf("  cmp %%rdi, %%rax\n");
+        printf("  setle %%al\n");
+        printf("  movzb %%al, %%rax\n");
         break;
     default:
         error("unknown node kind");

@@ -83,4 +83,39 @@ assert 1 "(-10 + 20) / 10"
 assert_target 10 "linux" "-10 + 20"
 assert_target 15 "windows" "-3 * -5"
 
+# Equality and relational operators (==, !=, <, <=, >, >=)
+assert 0 "0 == 1"
+assert 1 "42 == 42"
+assert 1 "0 != 1"
+assert 0 "42 != 42"
+
+assert 1 "0 < 1"
+assert 0 "1 < 1"
+assert 0 "2 < 1"
+assert 1 "0 <= 1"
+assert 1 "1 <= 1"
+assert 0 "2 <= 1"
+
+assert 1 "1 > 0"
+assert 0 "1 > 1"
+assert 0 "1 > 2"
+assert 1 "1 >= 0"
+assert 1 "1 >= 1"
+assert 0 "1 >= 2"
+
+# Precedence between arithmetic and comparison
+assert 1 "1 + 2 == 3"
+assert 0 "1 + 2 == 4"
+assert 1 "1 + 2 < 2 + 2"
+assert 0 "1 + 2 < 2 + 1"
+assert 1 "2 * 3 > 5"
+assert 0 "2 * 3 > 6"
+assert 2 "(1 == 1) + 1"
+assert 5 "(1 != 2) * 5"
+assert 1 "1 == 2 == 0"
+
+# Target ABI comparisons
+assert_target 1 "linux" "5 <= 10"
+assert_target 1 "windows" "10 >= 5"
+
 echo OK
