@@ -170,5 +170,34 @@ Previous iterations stored local variables using a single `char name`. To suppor
 - Keyword recognition for `"return"` verifies that the trailing character is not an identifier character (`!is_ident2(p[6])`), avoiding false positives for identifiers like `return_code` or `returnval`.
 - Local variable lookup uses `memcmp` against existing slice lengths, allocating slots below `%rbp` (`-8`, `-16`, etc.) with 16-byte stack frame alignment maintained for downstream ABI compliance.
 
+---
+
+## 9. Control Flow Statements and Compound Blocks
+
+Step 9 expands the statement grammar beyond linear sequences into structured control flow: conditional branching (`if`/`else`), bounded and unbounded iteration (`while`, `for`), compound statement blocks (`{ ... }`), and empty statements (`;`).
+
+### Separating Expressions and Statements in Codegen:
+A critical architectural milestone reached in Step 9 is the formal decoupling of expression evaluation (`gen_expr`) from statement execution (`gen_stmt`):
+- `gen_expr(Node *node)` computes a value and leaves exactly one 64-bit integer on the hardware stack.
+- `gen_stmt(Node *node)` executes for side effects and flow control, guaranteeing that the stack depth is completely neutral (net change of zero) across every statement.
+- An expression statement (`ND_EXPR_STMT`) simply evaluates `node->lhs` with `gen_expr` and immediately executes `pop %rax`.
+- This clean separation eliminates stack leakage inside loops and complex nested branches without requiring ad-hoc stack depth tracking.
+
+### Dangling Else and Recursive Descent:
+In standard C, an `else` binds to the innermost open `if`. In a recursive descent parser, greedy consumption handles this naturally without extra lookahead:
+```c
+if (consume("if")) {
+    ...
+    node->then = stmt();
+    if (consume("else"))
+        node->els = stmt();
+    return node;
+}
+```
+Because the inner `stmt()` call parses the nested `if` and eagerly tests for `else` before returning, `else` automatically associates with the closest preceding `if`.
+
+### Loop Labels and Sequence Monotonicity:
+Loops (`while`, `for`) and conditionals (`if`) require local branch targets for jump instructions (`je`, `jmp`). Using a monotonic integer counter (`label_seq++`) ensures every generated label (`.L.begin.N`, `.L.else.N`, `.L.end.N`) is globally unique across the translation unit. This cleanly supports arbitrarily deep loop nesting and multi-level branching.
+
 
 

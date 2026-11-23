@@ -38,19 +38,24 @@ struct Token {
 
 // AST Node kind
 typedef enum {
-    ND_ADD,    // +
-    ND_SUB,    // -
-    ND_MUL,    // *
-    ND_DIV,    // /
-    ND_EQ,     // ==
-    ND_NE,     // !=
-    ND_LT,     // <
-    ND_LE,     // <=
-    ND_NEG,    // Unary -
-    ND_ASSIGN, // =
-    ND_VAR,    // Variable reference
-    ND_NUM,    // Integer
-    ND_RETURN, // return statement
+    ND_ADD,       // +
+    ND_SUB,       // -
+    ND_MUL,       // *
+    ND_DIV,       // /
+    ND_EQ,        // ==
+    ND_NE,        // !=
+    ND_LT,        // <
+    ND_LE,        // <=
+    ND_NEG,       // Unary -
+    ND_ASSIGN,    // =
+    ND_VAR,       // Variable reference
+    ND_NUM,       // Integer
+    ND_RETURN,    // return statement
+    ND_IF,        // if statement
+    ND_WHILE,     // while statement
+    ND_FOR,       // for statement
+    ND_BLOCK,     // { ... } block
+    ND_EXPR_STMT, // Expression statement
 } NodeKind;
 
 // Local variable
@@ -72,6 +77,17 @@ struct Node {
     Node *rhs;     // Right-hand side
     long val;      // Used if kind == ND_NUM
     Var *var;      // Used if kind == ND_VAR
+
+    // "if", "while", or "for"
+    Node *cond;
+    Node *then;
+    Node *els;
+    Node *init;
+    Node *inc;
+
+    // Block "{ ... }"
+    Node *body;
+    Node *next;
 };
 
 // Input program string
@@ -193,9 +209,29 @@ static Token *tokenize(char *p) {
             p += 6;
             continue;
         }
+        if (startswith(p, "if") && !is_ident2(p[2])) {
+            cur = new_token(TK_RESERVED, cur, p, 2);
+            p += 2;
+            continue;
+        }
+        if (startswith(p, "else") && !is_ident2(p[4])) {
+            cur = new_token(TK_RESERVED, cur, p, 4);
+            p += 4;
+            continue;
+        }
+        if (startswith(p, "while") && !is_ident2(p[5])) {
+            cur = new_token(TK_RESERVED, cur, p, 5);
+            p += 5;
+            continue;
+        }
+        if (startswith(p, "for") && !is_ident2(p[3])) {
+            cur = new_token(TK_RESERVED, cur, p, 3);
+            p += 3;
+            continue;
+        }
 
-        // Single-character punctuators (+, -, *, /, (, ), <, >, =, ;)
-        if (strchr("+-*/()<>=;", *p)) {
+        // Single-character punctuators (+, -, *, /, (, ), <, >, =, ;, {, })
+        if (strchr("+-*/()<>=;{}", *p)) {
             cur = new_token(TK_RESERVED, cur, p++, 1);
             continue;
         }
@@ -383,15 +419,87 @@ static Node *expr(void) {
     return assign();
 }
 
-// stmt = "return" expr ";" | expr ";"
+// stmt = "return" expr ";"
+//      | "if" "(" expr ")" stmt ("else" stmt)?
+//      | "while" "(" expr ")" stmt
+//      | "for" "(" expr? ";" expr? ";" expr? ")" stmt
+//      | "{" stmt* "}"
+//      | ";"
+//      | expr ";"
 static Node *stmt(void) {
     if (consume("return")) {
-        Node *node = new_node(ND_RETURN, expr(), NULL);
+        Node *node = calloc(1, sizeof(Node));
+        node->kind = ND_RETURN;
+        node->lhs = expr();
         expect(";");
         return node;
     }
 
-    Node *node = expr();
+    if (consume("if")) {
+        Node *node = calloc(1, sizeof(Node));
+        node->kind = ND_IF;
+        expect("(");
+        node->cond = expr();
+        expect(")");
+        node->then = stmt();
+        if (consume("else"))
+            node->els = stmt();
+        return node;
+    }
+
+    if (consume("while")) {
+        Node *node = calloc(1, sizeof(Node));
+        node->kind = ND_WHILE;
+        expect("(");
+        node->cond = expr();
+        expect(")");
+        node->then = stmt();
+        return node;
+    }
+
+    if (consume("for")) {
+        Node *node = calloc(1, sizeof(Node));
+        node->kind = ND_FOR;
+        expect("(");
+        if (!consume(";")) {
+            node->init = expr();
+            expect(";");
+        }
+        if (!consume(";")) {
+            node->cond = expr();
+            expect(";");
+        }
+        if (!consume(")")) {
+            node->inc = expr();
+            expect(")");
+        }
+        node->then = stmt();
+        return node;
+    }
+
+    if (consume("{")) {
+        Node *node = calloc(1, sizeof(Node));
+        node->kind = ND_BLOCK;
+        Node head;
+        head.next = NULL;
+        Node *cur = &head;
+        while (!consume("}")) {
+            cur->next = stmt();
+            cur = cur->next;
+        }
+        node->body = head.next;
+        return node;
+    }
+
+    if (consume(";")) {
+        Node *node = calloc(1, sizeof(Node));
+        node->kind = ND_BLOCK;
+        return node;
+    }
+
+    Node *node = calloc(1, sizeof(Node));
+    node->kind = ND_EXPR_STMT;
+    node->lhs = expr();
     expect(";");
     return node;
 }
@@ -404,21 +512,16 @@ static void gen_addr(Node *node) {
     printf("  push %%rax\n");
 }
 
-// Code generator: evaluates AST using a stack machine
-static void gen(Node *node) {
+static void gen_stmt(Node *node);
+
+// Code generator: evaluates expression using a stack machine
+static void gen_expr(Node *node) {
     switch (node->kind) {
     case ND_NUM:
         printf("  push $%ld\n", node->val);
         return;
 
-    case ND_RETURN:
-        gen(node->lhs);
-        printf("  pop %%rax\n");
-        printf("  jmp .L.return\n");
-        return;
-
     case ND_VAR:
-        // Push the variable's address, then load from memory
         gen_addr(node);
         printf("  pop %%rax\n");
         printf("  mov (%%rax), %%rax\n");
@@ -426,17 +529,16 @@ static void gen(Node *node) {
         return;
 
     case ND_ASSIGN:
-        // Push address of lhs, evaluate rhs, store result
         gen_addr(node->lhs);
-        gen(node->rhs);
-        printf("  pop %%rdi\n");   // rhs value
-        printf("  pop %%rax\n");   // lhs address
+        gen_expr(node->rhs);
+        printf("  pop %%rdi\n");
+        printf("  pop %%rax\n");
         printf("  mov %%rdi, (%%rax)\n");
-        printf("  push %%rdi\n");  // assignment expression evaluates to rhs
+        printf("  push %%rdi\n");
         return;
 
     case ND_NEG:
-        gen(node->lhs);
+        gen_expr(node->lhs);
         printf("  pop %%rax\n");
         printf("  neg %%rax\n");
         printf("  push %%rax\n");
@@ -446,8 +548,8 @@ static void gen(Node *node) {
         break;
     }
 
-    gen(node->lhs);
-    gen(node->rhs);
+    gen_expr(node->lhs);
+    gen_expr(node->rhs);
 
     printf("  pop %%rdi\n");
     printf("  pop %%rax\n");
@@ -487,10 +589,95 @@ static void gen(Node *node) {
         printf("  movzb %%al, %%rax\n");
         break;
     default:
-        error("unknown node kind");
+        error("unknown expression kind");
     }
 
     printf("  push %%rax\n");
+}
+
+static int label_seq = 0;
+
+// Code generator: evaluates a statement
+static void gen_stmt(Node *node) {
+    switch (node->kind) {
+    case ND_EXPR_STMT:
+        gen_expr(node->lhs);
+        printf("  pop %%rax\n");
+        return;
+
+    case ND_RETURN:
+        gen_expr(node->lhs);
+        printf("  pop %%rax\n");
+        printf("  jmp .L.return\n");
+        return;
+
+    case ND_BLOCK:
+        for (Node *s = node->body; s; s = s->next)
+            gen_stmt(s);
+        return;
+
+    case ND_IF: {
+        int seq = label_seq++;
+        if (node->els) {
+            gen_expr(node->cond);
+            printf("  pop %%rax\n");
+            printf("  cmp $0, %%rax\n");
+            printf("  je .L.else.%d\n", seq);
+            gen_stmt(node->then);
+            printf("  jmp .L.end.%d\n", seq);
+            printf(".L.else.%d:\n", seq);
+            gen_stmt(node->els);
+            printf(".L.end.%d:\n", seq);
+        } else {
+            gen_expr(node->cond);
+            printf("  pop %%rax\n");
+            printf("  cmp $0, %%rax\n");
+            printf("  je .L.end.%d\n", seq);
+            gen_stmt(node->then);
+            printf(".L.end.%d:\n", seq);
+        }
+        return;
+    }
+
+    case ND_WHILE: {
+        int seq = label_seq++;
+        printf(".L.begin.%d:\n", seq);
+        gen_expr(node->cond);
+        printf("  pop %%rax\n");
+        printf("  cmp $0, %%rax\n");
+        printf("  je .L.end.%d\n", seq);
+        gen_stmt(node->then);
+        printf("  jmp .L.begin.%d\n", seq);
+        printf(".L.end.%d:\n", seq);
+        return;
+    }
+
+    case ND_FOR: {
+        int seq = label_seq++;
+        if (node->init) {
+            gen_expr(node->init);
+            printf("  pop %%rax\n");
+        }
+        printf(".L.begin.%d:\n", seq);
+        if (node->cond) {
+            gen_expr(node->cond);
+            printf("  pop %%rax\n");
+            printf("  cmp $0, %%rax\n");
+            printf("  je .L.end.%d\n", seq);
+        }
+        gen_stmt(node->then);
+        if (node->inc) {
+            gen_expr(node->inc);
+            printf("  pop %%rax\n");
+        }
+        printf("  jmp .L.begin.%d\n", seq);
+        printf(".L.end.%d:\n", seq);
+        return;
+    }
+
+    default:
+        error("unknown statement kind");
+    }
 }
 
 int main(int argc, char **argv) {
@@ -542,9 +729,11 @@ int main(int argc, char **argv) {
     token = tokenize(user_input);
 
     // Parse all statements
-    Node *stmts[100];
+    Node *stmts[1000];
     int nstmts = 0;
     while (!at_eof()) {
+        if (nstmts >= 1000)
+            error("too many statements (max 1000)");
         stmts[nstmts++] = stmt();
     }
 
@@ -563,13 +752,8 @@ int main(int argc, char **argv) {
         printf("  sub $%d, %%rsp\n", stack_size);
 
     // Emit code for each statement
-    for (int i = 0; i < nstmts; i++) {
-        gen(stmts[i]);
-        // Discard intermediate expression results to keep stack balanced.
-        // For programs without explicit return, %rax retains the last expression value.
-        if (stmts[i]->kind != ND_RETURN)
-            printf("  pop %%rax\n");
-    }
+    for (int i = 0; i < nstmts; i++)
+        gen_stmt(stmts[i]);
 
     // Function epilogue
     printf(".L.return:\n");

@@ -160,4 +160,41 @@ assert_target 42  "windows" "return 6 * 7;"
 assert_target 33  "linux"   "val = 11; return val * 3;"
 assert_target 100 "windows" "hundred = 10; return hundred * hundred;"
 
+# Control flow: if, else, while, for, blocks (Step 9)
+assert 3  "if (0) return 2; return 3;"
+assert 3  "if (1-1) return 2; return 3;"
+assert 2  "if (1) return 2; return 3;"
+assert 2  "if (2 > 1) return 2; return 3;"
+assert 3  "if (0) return 2; else return 3;"
+assert 2  "if (1) return 2; else return 3;"
+assert 2  "if (1 > 0) return 2; else return 3;"
+assert 3  "if (1 < 0) return 2; else return 3;"
+assert 42 "val = 10; if (val == 10) val = 42; else val = 0; return val;"
+assert 2  "if (1) if (0) return 1; else return 2;"
+assert 3  "if (0) if (1) return 1; else return 2; else return 3;"
+
+# While loop
+assert 10 "i = 0; while (i < 10) i = i + 1; return i;"
+assert 55 "i = 1; sum = 0; while (i <= 10) { sum = sum + i; i = i + 1; } return sum;"
+
+# For loop
+assert 55 "sum = 0; for (i = 1; i <= 10; i = i + 1) sum = sum + i; return sum;"
+assert 45 "sum = 0; for (i = 0; i < 10; i = i + 1) sum = sum + i; return sum;"
+assert 10 "i = 0; for (; i < 10; i = i + 1) ; return i;"
+assert 10 "i = 0; for (; i < 10;) i = i + 1; return i;"
+assert 5  "i = 0; for (;;) { i = i + 1; if (i == 5) return i; }"
+
+# Block statements & empty statements
+assert 3  "{ 1; { 2; } return 3; }"
+assert 30 "a = 10; { b = 20; a = a + b; } return a;"
+assert 15 "x = 0; if (1) { x = 10; x = x + 5; } return x;"
+assert 20 "x = 0; if (0) { x = 10; } else { x = 20; } return x;"
+assert 42 ";;; return 42;"
+
+# Target ABI checks with control flow
+assert_target 55 "linux"   "sum = 0; for (i = 1; i <= 10; i = i + 1) sum = sum + i; return sum;"
+assert_target 55 "windows" "sum = 0; for (i = 1; i <= 10; i = i + 1) sum = sum + i; return sum;"
+assert_target 1  "linux"   "if (1) return 1; else return 2;"
+assert_target 2  "windows" "if (0) return 1; else return 2;"
+
 echo OK
