@@ -45,12 +45,12 @@ Detailed architectural decisions, edge cases, and learnings are documented in th
 ## Usage
 
 ```bash
-# Compile an expression to x86-64 assembly
-./mibicc "2 * (3 + (4 * 2) + 2)" > out.s
+# Compile expressions, local variables, and control flow to x86-64 assembly
+./mibicc "sum = 0; for (i = 1; i <= 10; i = i + 1) sum = sum + i; return sum;" > out.s
 
 # Specify a target ABI explicitly
-./mibicc --target=linux "10 + 20 / 2" > out.s
-./mibicc --target=windows "10 + 20 / 2" > out.s
+./mibicc --target=linux "val = 10; if (val == 10) return 42; else return 0;" > out.s
+./mibicc --target=windows "i = 0; while (i < 5) i = i + 1; return i;" > out.s
 
 # Assemble and link with GCC or Clang
 gcc -static -o out out.s
@@ -66,10 +66,10 @@ echo $?  # Outputs the evaluated result
 - [x] **Step 4:** Operator precedence (`*`, `/`, nested parentheses) & cross-platform targets
 - [x] **Step 5:** Unary operators (`+`, `-`)
 - [x] **Step 6:** Equality and relational comparisons (`==`, `!=`, `<`, `<=`, `>`, `>=`)
-- [ ] **Step 7:** Local variables and assignment
-- [ ] **Step 8:** Statements and semicolons (`return`)
-- [ ] **Step 9:** Control flow (`if`/`else`, `while`, `for`)
-- [ ] **Step 10:** Block statements `{ ... }`
+- [x] **Step 7:** Local variables and assignment
+- [x] **Step 8:** Statements and semicolons (`return`, multi-letter identifiers)
+- [x] **Step 9:** Control flow (`if`/`else`, `while`, `for`)
+- [x] **Step 10:** Block statements `{ ... }`
 - [ ] **Step 11:** Function calls with System V and Windows x64 calling conventions
 - [ ] **Step 12:** Pointer operations and dereferencing (`&`, `*`)
 - [ ] **Step 13:** Pointer arithmetic and arrays
