@@ -150,4 +150,25 @@ While keeping `mibicc` in a single translation unit (`src/main.c`) enabled rapid
 - `type.c` (type checker and implicit promotions)
 - `codegen.c` (ABI-specific assembly emission)
 
+---
+
+## 8. Return Statements, Multi-Letter Identifiers, and Epilogue Jump Optimization
+
+Step 8 introduces explicit `return` statements (`ND_RETURN`), arbitrary-length local identifiers, and a unified function epilogue label.
+
+### Statement Discarding vs. Explicit Return:
+In C, an expression followed by a semicolon is an expression statement (`expr;`). Its evaluation produces a value that must be discarded to keep the hardware stack balanced across statements:
+- For expression statements, codegen emits `pop %rax` immediately after evaluating the expression.
+- For `return expr;`, codegen evaluates the expression into `%rax` and emits `jmp .L.return`.
+- This ensures any subsequent statements are cleanly skipped when an early `return` executes.
+- Because `%rax` is only modified when evaluating expressions, programs without explicit `return` (legacy Step 1-7 tests) naturally preserve the value of the last statement in `%rax` as the exit code.
+
+### Generalizing Identifiers from Single Chars to Length-Bounded Strings:
+Previous iterations stored local variables using a single `char name`. To support realistic code, identifiers now point to their source slice (`char *name; int len`):
+- `is_ident1()` checks for `[a-zA-Z_]` to start an identifier.
+- `is_ident2()` allows alphanumeric characters plus underscores for continuation.
+- Keyword recognition for `"return"` verifies that the trailing character is not an identifier character (`!is_ident2(p[6])`), avoiding false positives for identifiers like `return_code` or `returnval`.
+- Local variable lookup uses `memcmp` against existing slice lengths, allocating slots below `%rbp` (`-8`, `-16`, etc.) with 16-byte stack frame alignment maintained for downstream ABI compliance.
+
+
 

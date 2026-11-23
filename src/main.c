@@ -50,13 +50,15 @@ typedef enum {
     ND_ASSIGN, // =
     ND_VAR,    // Variable reference
     ND_NUM,    // Integer
+    ND_RETURN, // return statement
 } NodeKind;
 
 // Local variable
 typedef struct Var Var;
 
 struct Var {
-    char name;    // Single lowercase letter (a-z)
+    char *name;   // Pointer to variable name in source
+    int len;      // Variable name length
     int offset;   // Offset from %rbp (negative, e.g. -8, -16, ...)
     Var *next;    // Next variable in the linked list
 };
@@ -154,6 +156,16 @@ static Token *new_token(TokenKind kind, Token *cur, char *loc, int len) {
     return tok;
 }
 
+// Returns true if c can start an identifier
+static bool is_ident1(char c) {
+    return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || c == '_';
+}
+
+// Returns true if c can be part of an identifier
+static bool is_ident2(char c) {
+    return is_ident1(c) || ('0' <= c && c <= '9');
+}
+
 // Tokenizes user_input and returns the head of the token list
 static Token *tokenize(char *p) {
     Token head;
@@ -175,6 +187,13 @@ static Token *tokenize(char *p) {
             continue;
         }
 
+        // Keywords
+        if (startswith(p, "return") && !is_ident2(p[6])) {
+            cur = new_token(TK_RESERVED, cur, p, 6);
+            p += 6;
+            continue;
+        }
+
         // Single-character punctuators (+, -, *, /, (, ), <, >, =, ;)
         if (strchr("+-*/()<>=;", *p)) {
             cur = new_token(TK_RESERVED, cur, p++, 1);
@@ -190,9 +209,12 @@ static Token *tokenize(char *p) {
             continue;
         }
 
-        // Single lowercase letter identifier
-        if ('a' <= *p && *p <= 'z') {
-            cur = new_token(TK_IDENT, cur, p++, 1);
+        // Identifier
+        if (is_ident1(*p)) {
+            char *q = p++;
+            while (is_ident2(*p))
+                p++;
+            cur = new_token(TK_IDENT, cur, q, p - q);
             continue;
         }
 
@@ -203,17 +225,18 @@ static Token *tokenize(char *p) {
     return head.next;
 }
 
-// Finds or creates a local variable by name
-static Var *find_or_create_var(char name) {
+// Finds or creates a local variable by name and length
+static Var *find_or_create_var(char *name, int len) {
     // Search existing variables
     for (Var *v = locals; v; v = v->next) {
-        if (v->name == name)
+        if (v->len == len && memcmp(v->name, name, len) == 0)
             return v;
     }
 
     // Allocate a new variable with the next stack slot
     Var *v = calloc(1, sizeof(Var));
     v->name = name;
+    v->len = len;
     // Each variable occupies 8 bytes, offsets go -8, -16, -24, ...
     int count = 0;
     for (Var *x = locals; x; x = x->next)
@@ -268,7 +291,7 @@ static Node *primary(void) {
     }
 
     if (token->kind == TK_IDENT) {
-        Var *var = find_or_create_var(*token->loc);
+        Var *var = find_or_create_var(token->loc, token->len);
         token = token->next;
         return new_node_var(var);
     }
@@ -360,8 +383,14 @@ static Node *expr(void) {
     return assign();
 }
 
-// stmt = expr ";"
+// stmt = "return" expr ";" | expr ";"
 static Node *stmt(void) {
+    if (consume("return")) {
+        Node *node = new_node(ND_RETURN, expr(), NULL);
+        expect(";");
+        return node;
+    }
+
     Node *node = expr();
     expect(";");
     return node;
@@ -380,6 +409,12 @@ static void gen(Node *node) {
     switch (node->kind) {
     case ND_NUM:
         printf("  push $%ld\n", node->val);
+        return;
+
+    case ND_RETURN:
+        gen(node->lhs);
+        printf("  pop %%rax\n");
+        printf("  jmp .L.return\n");
         return;
 
     case ND_VAR:
@@ -519,30 +554,32 @@ int main(int argc, char **argv) {
         nlocals++;
     int stack_size = ((nlocals * 8) + 15) & ~15; // align to 16 bytes
 
+    // Function prologue
     printf(".globl main\n");
     printf("main:\n");
-
-    // Function prologue
     printf("  push %%rbp\n");
     printf("  mov %%rsp, %%rbp\n");
     if (stack_size > 0)
         printf("  sub $%d, %%rsp\n", stack_size);
 
-    // Emit code for each statement; result of last statement stays in %rax
+    // Emit code for each statement
     for (int i = 0; i < nstmts; i++) {
         gen(stmts[i]);
-        // Discard intermediate results (keep stack balanced)
-        // The result of the last statement is intentionally left on the stack
-        if (i < nstmts - 1)
+        // Discard intermediate expression results to keep stack balanced.
+        // For programs without explicit return, %rax retains the last expression value.
+        if (stmts[i]->kind != ND_RETURN)
             printf("  pop %%rax\n");
     }
 
-    // Pop final result into %rax (return value)
-    printf("  pop %%rax\n");
-
     // Function epilogue
+    printf(".L.return:\n");
     printf("  mov %%rbp, %%rsp\n");
     printf("  pop %%rbp\n");
     printf("  ret\n");
+
+    // Clear executable stack flag for GNU ld on Linux
+    if (target_os == TARGET_LINUX) {
+        printf(".section .note.GNU-stack,\"\",@progbits\n");
+    }
     return 0;
 }
