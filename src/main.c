@@ -56,6 +56,7 @@ typedef enum {
     ND_FOR,       // for statement
     ND_BLOCK,     // { ... } block
     ND_EXPR_STMT, // Expression statement
+    ND_FUNCALL,   // Function call
 } NodeKind;
 
 // Local variable
@@ -88,6 +89,11 @@ struct Node {
     // Block "{ ... }"
     Node *body;
     Node *next;
+
+    // Function call "func(arg1, arg2, ...)"
+    char *funcname;
+    Node *args[6];
+    int nargs;
 };
 
 // Input program string
@@ -127,6 +133,16 @@ static void error_at(char *loc, char *fmt, ...) {
 // Returns true if string p starts with prefix q
 static bool startswith(char *p, char *q) {
     return strncmp(p, q, strlen(q)) == 0;
+}
+
+// Duplicates a string slice with explicit length into a null-terminated string
+static char *strndup_len(const char *s, int len) {
+    char *p = malloc(len + 1);
+    if (!p)
+        error("out of memory");
+    memcpy(p, s, len);
+    p[len] = '\0';
+    return p;
 }
 
 // Consumes the current token if it matches op
@@ -230,8 +246,8 @@ static Token *tokenize(char *p) {
             continue;
         }
 
-        // Single-character punctuators (+, -, *, /, (, ), <, >, =, ;, {, })
-        if (strchr("+-*/()<>=;{}", *p)) {
+        // Single-character punctuators (+, -, *, /, (, ), <, >, =, ;, {, }, ,)
+        if (strchr("+-*/()<>=;{},", *p)) {
             cur = new_token(TK_RESERVED, cur, p++, 1);
             continue;
         }
@@ -318,7 +334,7 @@ static Node *mul(void);
 static Node *unary(void);
 static Node *primary(void);
 
-// primary = "(" expr ")" | num | ident
+// primary = "(" expr ")" | ident "(" (expr ("," expr)*)? ")" | ident | num
 static Node *primary(void) {
     if (consume("(")) {
         Node *node = expr();
@@ -327,6 +343,29 @@ static Node *primary(void) {
     }
 
     if (token->kind == TK_IDENT) {
+        // Function call: ident "(" (expr ("," expr)*)? ")"
+        if (token->next->kind == TK_RESERVED &&
+            token->next->len == 1 &&
+            *token->next->loc == '(') {
+            char *name = strndup_len(token->loc, token->len);
+            token = token->next->next; // skip ident and '('
+
+            Node *node = calloc(1, sizeof(Node));
+            node->kind = ND_FUNCALL;
+            node->funcname = name;
+
+            int nargs = 0;
+            while (!consume(")")) {
+                if (nargs > 0)
+                    expect(",");
+                if (nargs >= 6)
+                    error_at(token->loc, "too many arguments to function call (max 6)");
+                node->args[nargs++] = expr();
+            }
+            node->nargs = nargs;
+            return node;
+        }
+
         Var *var = find_or_create_var(token->loc, token->len);
         token = token->next;
         return new_node_var(var);
@@ -512,6 +551,12 @@ static void gen_addr(Node *node) {
     printf("  push %%rax\n");
 }
 
+static int label_seq = 0;
+
+// Argument-passing registers for x86-64 calling conventions
+static char *argreg64_linux[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
+static char *argreg64_win[] = {"%rcx", "%rdx", "%r8", "%r9"};
+
 static void gen_stmt(Node *node);
 
 // Code generator: evaluates expression using a stack machine
@@ -543,6 +588,69 @@ static void gen_expr(Node *node) {
         printf("  neg %%rax\n");
         printf("  push %%rax\n");
         return;
+
+    case ND_FUNCALL: {
+        for (int i = 0; i < node->nargs; i++)
+            gen_expr(node->args[i]);
+
+        int seq = label_seq++;
+
+        if (target_os == TARGET_LINUX) {
+            for (int i = node->nargs - 1; i >= 0; i--)
+                printf("  pop %s\n", argreg64_linux[i]);
+
+            printf("  test $15, %%rsp\n");
+            printf("  jnz .L.call.align.%d\n", seq);
+            printf("  mov $0, %%al\n");
+            printf("  call %s\n", node->funcname);
+            printf("  jmp .L.call.end.%d\n", seq);
+            printf(".L.call.align.%d:\n", seq);
+            printf("  sub $8, %%rsp\n");
+            printf("  mov $0, %%al\n");
+            printf("  call %s\n", node->funcname);
+            printf("  add $8, %%rsp\n");
+            printf(".L.call.end.%d:\n", seq);
+            printf("  push %%rax\n");
+            return;
+        }
+
+        if (target_os == TARGET_WINDOWS) {
+            if (node->nargs == 6) {
+                printf("  pop %%r11\n");
+                printf("  pop %%r10\n");
+            } else if (node->nargs == 5) {
+                printf("  pop %%r10\n");
+            }
+
+            int reg_args = node->nargs < 4 ? node->nargs : 4;
+            for (int i = reg_args - 1; i >= 0; i--)
+                printf("  pop %s\n", argreg64_win[i]);
+
+            int shadow_bytes = (node->nargs <= 4) ? 32 : 48;
+
+            printf("  sub $%d, %%rsp\n", shadow_bytes);
+            if (node->nargs >= 5)
+                printf("  mov %%r10, 32(%%rsp)\n");
+            if (node->nargs == 6)
+                printf("  mov %%r11, 40(%%rsp)\n");
+
+            printf("  test $15, %%rsp\n");
+            printf("  jnz .L.call.win.align.%d\n", seq);
+            printf("  call %s\n", node->funcname);
+            printf("  jmp .L.call.win.end.%d\n", seq);
+            printf(".L.call.win.align.%d:\n", seq);
+            printf("  sub $8, %%rsp\n");
+            printf("  call %s\n", node->funcname);
+            printf("  add $8, %%rsp\n");
+            printf(".L.call.win.end.%d:\n", seq);
+            printf("  add $%d, %%rsp\n", shadow_bytes);
+            printf("  push %%rax\n");
+            return;
+        }
+
+        error("unsupported target for function call");
+        return;
+    }
 
     default:
         break;
@@ -594,8 +702,6 @@ static void gen_expr(Node *node) {
 
     printf("  push %%rax\n");
 }
-
-static int label_seq = 0;
 
 // Code generator: evaluates a statement
 static void gen_stmt(Node *node) {

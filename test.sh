@@ -1,10 +1,13 @@
 #!/bin/bash
+# Compile test helper functions
+gcc -c -o test_helpers.o test_helpers.c
+
 assert() {
   expected="$1"
   input="$2"
 
   ./mibicc "$input" > tmp.s
-  gcc -static -o tmp tmp.s
+  gcc -static -z noexecstack -o tmp tmp.s test_helpers.o
   ./tmp
   actual="$?"
 
@@ -22,7 +25,7 @@ assert_target() {
   input="$3"
 
   ./mibicc "--target=$target" "$input" > tmp.s
-  gcc -static -o tmp tmp.s
+  gcc -static -z noexecstack -o tmp tmp.s test_helpers.o
   ./tmp
   actual="$?"
 
@@ -196,5 +199,48 @@ assert_target 55 "linux"   "sum = 0; for (i = 1; i <= 10; i = i + 1) sum = sum +
 assert_target 55 "windows" "sum = 0; for (i = 1; i <= 10; i = i + 1) sum = sum + i; return sum;"
 assert_target 1  "linux"   "if (1) return 1; else return 2;"
 assert_target 2  "windows" "if (0) return 1; else return 2;"
+
+# Function calls (Step 11)
+# 0-arg function calls
+assert 42 "ret42();"
+assert 42 "return ret42();"
+
+# Standard libc functions
+assert 42 "return abs(-42);"
+assert 10 "return abs(10);"
+assert 0  "return abs(0);"
+
+# 2-arg function calls
+assert 42 "return add(20, 22);"
+assert 10 "return sub(20, 10);"
+assert 30 "return mul(5, 6);"
+assert 4  "return div2(20, 5);"
+
+# 6-arg function calls (System V registers: rdi, rsi, rdx, rcx, r8, r9)
+assert 21 "return sum6(1, 2, 3, 4, 5, 6);"
+assert 60 "return sum6(10, 10, 10, 10, 10, 10);"
+
+# Nested function calls & expressions
+assert 42 "return add(add(10, 20), add(5, 7));"
+assert 50 "return add(20, mul(5, 6));"
+assert 42 "x = 20; y = 22; return add(x, y);"
+assert 100 "x = add(10, 40); return x * 2;"
+
+# Function call inside loop and if
+assert 15 "sum = 0; for (i = 1; i <= 5; i = i + 1) sum = add(sum, i); return sum;"
+assert 42 "if (abs(-10) == 10) return add(20, 22); else return 0;"
+
+# Windows x64 ABI function calls (rcx, rdx, r8, r9 + shadow space + stack args)
+assert_target 42 "windows" "return win_ret42();"
+assert_target 42 "windows" "return win_add(20, 22);"
+assert_target 10 "windows" "return win_sub(20, 10);"
+assert_target 10 "windows" "return win_sum4(1, 2, 3, 4);"
+assert_target 21 "windows" "return win_sum6(1, 2, 3, 4, 5, 6);"
+assert_target 42 "windows" "return win_add(win_add(10, 20), win_add(5, 7));"
+assert_target 15 "windows" "sum = 0; for (i = 1; i <= 5; i = i + 1) sum = win_add(sum, i); return sum;"
+
+# Linux target explicit checks
+assert_target 42 "linux" "return ret42();"
+assert_target 21 "linux" "return sum6(1, 2, 3, 4, 5, 6);"
 
 echo OK

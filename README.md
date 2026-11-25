@@ -45,12 +45,15 @@ Detailed architectural decisions, edge cases, and learnings are documented in th
 ## Usage
 
 ```bash
-# Compile expressions, local variables, and control flow to x86-64 assembly
+# Compile expressions, function calls, local variables, and control flow to x86-64 assembly
 ./mibicc "sum = 0; for (i = 1; i <= 10; i = i + 1) sum = sum + i; return sum;" > out.s
 
+# Function call passing arguments via System V AMD64 or Windows x64 ABI
+./mibicc "return add(20, 22);" > out.s
+
 # Specify a target ABI explicitly
-./mibicc --target=linux "val = 10; if (val == 10) return 42; else return 0;" > out.s
-./mibicc --target=windows "i = 0; while (i < 5) i = i + 1; return i;" > out.s
+./mibicc --target=linux "val = 10; if (val == 10) return add(20, 22); else return 0;" > out.s
+./mibicc --target=windows "return win_add(20, 22);" > out.s
 
 # Assemble and link with GCC or Clang
 gcc -static -o out out.s
@@ -70,7 +73,7 @@ echo $?  # Outputs the evaluated result
 - [x] **Step 8:** Statements and semicolons (`return`, multi-letter identifiers)
 - [x] **Step 9:** Control flow (`if`/`else`, `while`, `for`)
 - [x] **Step 10:** Block statements `{ ... }`
-- [ ] **Step 11:** Function calls with System V and Windows x64 calling conventions
+- [x] **Step 11:** Function calls with System V and Windows x64 calling conventions
 - [ ] **Step 12:** Pointer operations and dereferencing (`&`, `*`)
 - [ ] **Step 13:** Pointer arithmetic and arrays
 - [ ] **Step 14:** Structs, unions, and typedefs

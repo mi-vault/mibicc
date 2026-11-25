@@ -199,5 +199,51 @@ Because the inner `stmt()` call parses the nested `if` and eagerly tests for `el
 ### Loop Labels and Sequence Monotonicity:
 Loops (`while`, `for`) and conditionals (`if`) require local branch targets for jump instructions (`je`, `jmp`). Using a monotonic integer counter (`label_seq++`) ensures every generated label (`.L.begin.N`, `.L.else.N`, `.L.end.N`) is globally unique across the translation unit. This cleanly supports arbitrarily deep loop nesting and multi-level branching.
 
+---
+
+## 10. Function Calls and Cross-Platform Calling Conventions (System V AMD64 vs. Microsoft x64)
+
+Step 11 introduces function calls (`ND_FUNCALL`), parsing comma-separated argument lists, and handling x86-64 calling conventions and stack alignment rules for both Linux and Windows target ABIs.
+
+### Parsing Function Calls Without Variable Pollution:
+In the lexer and parser, an identifier can represent either a variable reference (`x`) or a function call (`foo(...)`):
+- When `token->kind == TK_IDENT`, the parser inspects the immediately following token.
+- If followed by `(`, it is parsed as a function call without invoking `find_or_create_var()`, preventing function names from polluting the local variable table or allocating stack frame slots.
+- Arguments are parsed as a comma-separated list of general expressions (`expr()`), allowing arbitrary nesting (e.g. `add(add(10, 20), mul(3, 4))`), variable arguments, and control flow integration.
+
+### System V AMD64 Calling Convention (Linux, macOS, BSD):
+Under the System V AMD64 ABI:
+1. **Argument Registers**: The first 6 integer or pointer arguments are passed in registers in exact order:
+   `%rdi`, `%rsi`, `%rdx`, `%rcx`, `%r8`, `%r9`.
+2. **Evaluation & Pop Order**: Arguments are evaluated left-to-right using `gen_expr()`, pushing their 64-bit results onto the stack. They are then popped in reverse order into the designated registers.
+3. **16-Byte Stack Alignment**: The AMD64 ABI requires `(%rsp + 8)` to be a multiple of 16 at function entry, which means `%rsp` must be 16-byte aligned (`%rsp % 16 == 0`) immediately prior to the `call` instruction. Because function calls can occur inside complex expressions where intermediate values reside on the stack, `mibicc` emits a dynamic alignment check:
+   ```assembly
+     test $15, %rsp
+     jnz .L.call.align.N
+     mov $0, %al
+     call <funcname>
+     jmp .L.call.end.N
+   .L.call.align.N:
+     sub $8, %rsp
+     mov $0, %al
+     call <funcname>
+     add $8, %rsp
+   .L.call.end.N:
+     push %rax
+   ```
+4. **Variadic Register Guard (`%al = 0`)**: For variadic functions like `printf`, `%al` must denote the number of vector registers used (0 here) to prevent crashes in the callee.
+
+### Microsoft x64 Calling Convention (Windows):
+Under the Microsoft x64 ABI:
+1. **Argument Registers**: The first 4 integer or pointer arguments are passed in:
+   `%rcx`, `%rdx`, `%r8`, `%r9`.
+2. **Shadow Space (Home Space)**: The caller is required to reserve at least 32 bytes (4 quadwords) of stack space directly above the return address, even if the function takes zero arguments.
+3. **Stack Arguments (5th and 6th Arguments)**: If more than 4 arguments are passed, arguments 5 and 6 are placed on the stack at `32(%rsp)` and `40(%rsp)` above the shadow space. Frame allocation uses 48 bytes (`sub $48, %rsp`) to ensure strict 16-byte stack alignment.
+4. **Caller Cleanup**: After the call returns, the caller cleans up the allocated shadow/argument area (`add $32, %rsp` or `add $48, %rsp`), and pushes the return value in `%rax` back onto the stack machine.
+
+### Native Cross-ABI Verification:
+To verify Windows ABI code generation on Linux in CI and local testing, helper functions in `test_helpers.c` are decorated with `__attribute__((ms_abi))`. This causes GCC/Clang on Linux to compile test routines with the exact Microsoft x64 register allocation and shadow space requirements, validating cross-platform compatibility without needing a Windows host.
+
+
 
 
