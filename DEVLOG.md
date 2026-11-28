@@ -271,6 +271,27 @@ Regression testing `1 + win_sum6(1, 2, 3, 4, 5, 6)` exposed a bug in Step 11's W
 - That post-hoc `sub $8, %rsp` shifted the previously written 5th and 6th arguments to `40(%rsp)` and `48(%rsp)` right before `call`, causing the callee to read garbage from `32(%rsp)`!
 - **Fix**: Check `test $15, %rsp` *before* allocating the shadow space + stack argument area (`emit_win_call`), subtracting either `shadow_bytes` (aligned) or `shadow_bytes + 8` (misaligned) so `32(%rsp)` and `40(%rsp)` always match the exact ABI offsets immediately before `call`.
 
+---
+
+## 12. Type System, Pointer Arithmetic, Arrays, and `sizeof`
+
+Step 13 introduces explicit `int` declarations, pointer and array types (`TY_INT`, `TY_PTR`, `TY_ARRAY`), scaled pointer arithmetic (`ptr + n`, `ptr - n`, `ptr - ptr`), subscripting (`a[i]`), multi-dimensional arrays, and `sizeof`.
+
+### Typed Declarations With Legacy Untyped Compatibility:
+- `declaration()` parses `"int" declarator ("=" assign)? ("," declarator ("=" assign)?)* ";"` where each declarator supports arbitrary pointer indirection (`*`) and right-recursive multi-dimensional bounds (`type_suffix` for `[N]`).
+- For `int a[2][3]`, right-associative suffix construction builds `TY_ARRAY(TY_ARRAY(TY_INT, 3), 2)` (`size = 48`), matching C row-major memory layout so `a[1]` evaluates to a `TY_ARRAY(TY_INT, 3)` (`size = 24`) and `&a[1] - &a[0] == 1`.
+- Previously untyped identifier references still auto-allocate `TY_INT` via `find_or_create_var()`, preserving backward compatibility across all Step 1–12 tests.
+
+### Scaled Pointer Arithmetic (`new_add` & `new_sub`):
+- `add_type()` propagates `Type` bottom-up across the AST so binary `+` and `-` know whether operands are integers, pointers, or arrays.
+- `new_add()` scales the integer operand by `lhs->ty->base->size` (and canonicalizes `n + ptr` to `ptr + n`), while rejecting `ptr + ptr`.
+- `new_sub()` handles `ptr - n` by scaling `n` by `lhs->ty->base->size`, and handles `ptr - ptr` by dividing the raw byte difference by `lhs->ty->base->size`.
+
+### Array Subscripting & Decay-on-Evaluation:
+- `postfix()` parses `primary ("[" expr "]")*` and desugars `x[y]` directly into `ND_DEREF(new_add(x, y))`, automatically supporting commutative `2[a]` and chained `a[1][2]`.
+- In `gen_expr()`, `ND_VAR` and `ND_DEREF` check `node->ty->kind != TY_ARRAY` before emitting `mov (%rax), %rax`. When an array is evaluated as an expression (e.g., `a + 1`, `sum_long_arr(a, 4)`, or intermediate `a[1]` in `a[1][2]`), codegen stops after pushing the base address so the array decays cleanly to a pointer rather than attempting to load an array by value.
+- Stack frame allocation tracks `locals_stack_bytes` cumulatively per variable size (`ty->size`) so multi-byte arrays fit cleanly below `%rbp` (`[offset .. offset + size - 1]`) without changing the relative downward order of earlier scalar locals.
+
 
 
 

@@ -40,6 +40,13 @@ long identity_long(long x) {
     return x;
 }
 
+long sum_long_arr(long *arr, int n) {
+    long total = 0;
+    for (int i = 0; i < n; i++)
+        total += arr[i];
+    return total;
+}
+
 // Windows x64 ABI helpers (compiled with ms_abi attribute on GCC/Clang)
 #if defined(__GNUC__) || defined(__clang__)
 int __attribute__((ms_abi)) win_ret42(void) {
@@ -76,5 +83,12 @@ void __attribute__((ms_abi)) win_write_long(long *p, long v) {
 
 long __attribute__((ms_abi)) win_identity_long(long x) {
     return x;
+}
+
+long __attribute__((ms_abi)) win_sum_long_arr(long *arr, int n) {
+    long total = 0;
+    for (int i = 0; i < n; i++)
+        total += arr[i];
+    return total;
 }
 #endif

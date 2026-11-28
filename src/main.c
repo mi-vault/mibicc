@@ -61,12 +61,33 @@ typedef enum {
     ND_DEREF,     // Unary * (dereference)
 } NodeKind;
 
+// Type kind
+typedef enum {
+    TY_INT,
+    TY_PTR,
+    TY_ARRAY,
+} TypeKind;
+
+// Type descriptor
+typedef struct Type Type;
+
+struct Type {
+    TypeKind kind; // Type kind
+    int size;      // sizeof() value in bytes
+    Type *base;    // Base type for pointers and arrays
+    int array_len; // Array element count
+};
+
+static Type ty_int_obj = {TY_INT, 8, NULL, 0};
+static Type *ty_int = &ty_int_obj;
+
 // Local variable
 typedef struct Var Var;
 
 struct Var {
     char *name;   // Pointer to variable name in source
     int len;      // Variable name length
+    Type *ty;     // Variable type
     int offset;   // Offset from %rbp (negative, e.g. -8, -16, ...)
     Var *next;    // Next variable in the linked list
 };
@@ -76,6 +97,7 @@ typedef struct Node Node;
 
 struct Node {
     NodeKind kind; // Node kind
+    Type *ty;      // Node type
     Node *lhs;     // Left-hand side
     Node *rhs;     // Right-hand side
     long val;      // Used if kind == ND_NUM
@@ -106,6 +128,7 @@ static Token *token;
 
 // All local variables created during parsing
 static Var *locals;
+static int locals_stack_bytes;
 
 // Reports an error and exits
 static void error(char *fmt, ...) {
@@ -247,9 +270,19 @@ static Token *tokenize(char *p) {
             p += 3;
             continue;
         }
+        if (startswith(p, "int") && !is_ident2(p[3])) {
+            cur = new_token(TK_RESERVED, cur, p, 3);
+            p += 3;
+            continue;
+        }
+        if (startswith(p, "sizeof") && !is_ident2(p[6])) {
+            cur = new_token(TK_RESERVED, cur, p, 6);
+            p += 6;
+            continue;
+        }
 
-        // Single-character punctuators (+, -, *, /, (, ), <, >, =, ;, {, }, ,, &)
-        if (strchr("+-*/()<>=;{},&", *p)) {
+        // Single-character punctuators (+, -, *, /, (, ), <, >, =, ;, {, }, ,, &, [, ])
+        if (strchr("+-*/()<>=;{},&[]", *p)) {
             cur = new_token(TK_RESERVED, cur, p++, 1);
             continue;
         }
@@ -279,26 +312,111 @@ static Token *tokenize(char *p) {
     return head.next;
 }
 
-// Finds or creates a local variable by name and length
-static Var *find_or_create_var(char *name, int len) {
-    // Search existing variables
+// Returns true if ty is an integer type
+static bool is_integer(Type *ty) {
+    return ty->kind == TY_INT;
+}
+
+// Constructs a pointer type pointing to base
+static Type *pointer_to(Type *base) {
+    Type *ty = calloc(1, sizeof(Type));
+    ty->kind = TY_PTR;
+    ty->size = 8;
+    ty->base = base;
+    return ty;
+}
+
+// Constructs an array type of len elements of base
+static Type *array_of(Type *base, int len) {
+    Type *ty = calloc(1, sizeof(Type));
+    ty->kind = TY_ARRAY;
+    ty->size = base->size * len;
+    ty->base = base;
+    ty->array_len = len;
+    return ty;
+}
+
+// Assigns types recursively to an AST subtree
+static void add_type(Node *node) {
+    if (!node || node->ty)
+        return;
+
+    add_type(node->lhs);
+    add_type(node->rhs);
+    add_type(node->cond);
+    add_type(node->then);
+    add_type(node->els);
+    add_type(node->init);
+    add_type(node->inc);
+
+    for (Node *n = node->body; n; n = n->next)
+        add_type(n);
+    for (int i = 0; i < node->nargs; i++)
+        add_type(node->args[i]);
+
+    switch (node->kind) {
+    case ND_ADD:
+    case ND_SUB:
+    case ND_MUL:
+    case ND_DIV:
+    case ND_NEG:
+        node->ty = node->lhs->ty;
+        return;
+    case ND_ASSIGN:
+        if (node->lhs->ty->kind == TY_ARRAY)
+            error("not an lvalue");
+        node->ty = node->lhs->ty;
+        return;
+    case ND_EQ:
+    case ND_NE:
+    case ND_LT:
+    case ND_LE:
+    case ND_NUM:
+    case ND_FUNCALL:
+        node->ty = ty_int;
+        return;
+    case ND_VAR:
+        node->ty = node->var->ty;
+        return;
+    case ND_ADDR:
+        node->ty = pointer_to(node->lhs->ty);
+        return;
+    case ND_DEREF:
+        node->ty = node->lhs->ty->base ? node->lhs->ty->base : ty_int;
+        return;
+    default:
+        return;
+    }
+}
+
+// Finds an existing local variable by name and length
+static Var *find_var(char *name, int len) {
     for (Var *v = locals; v; v = v->next) {
         if (v->len == len && memcmp(v->name, name, len) == 0)
             return v;
     }
+    return NULL;
+}
 
-    // Allocate a new variable with the next stack slot
+// Creates a new local variable with the given type and allocates stack space
+static Var *new_lvar(char *name, int len, Type *ty) {
     Var *v = calloc(1, sizeof(Var));
     v->name = name;
     v->len = len;
-    // Each variable occupies 8 bytes, offsets go -8, -16, -24, ...
-    int count = 0;
-    for (Var *x = locals; x; x = x->next)
-        count++;
-    v->offset = (count + 1) * -8;
+    v->ty = ty;
+    locals_stack_bytes += ty->size;
+    v->offset = -locals_stack_bytes;
     v->next = locals;
     locals = v;
     return v;
+}
+
+// Finds or creates an implicitly typed (int) local variable
+static Var *find_or_create_var(char *name, int len) {
+    Var *v = find_var(name, len);
+    if (v)
+        return v;
+    return new_lvar(name, len, ty_int);
 }
 
 // Creates a new binary operator node
@@ -334,7 +452,114 @@ static Node *relational(void);
 static Node *add(void);
 static Node *mul(void);
 static Node *unary(void);
+static Node *postfix(void);
 static Node *primary(void);
+static Node *declaration(void);
+
+// Builds an addition node with C pointer-arithmetic scaling
+static Node *new_add(Node *lhs, Node *rhs, Token *tok) {
+    add_type(lhs);
+    add_type(rhs);
+
+    if (is_integer(lhs->ty) && is_integer(rhs->ty))
+        return new_node(ND_ADD, lhs, rhs);
+
+    if (lhs->ty->base && rhs->ty->base)
+        error_at(tok->loc, "invalid operands");
+
+    // Canonicalize num + ptr to ptr + num
+    if (!lhs->ty->base && rhs->ty->base) {
+        Node *tmp = lhs;
+        lhs = rhs;
+        rhs = tmp;
+    }
+
+    rhs = new_node(ND_MUL, rhs, new_node_num(lhs->ty->base->size));
+    Node *node = new_node(ND_ADD, lhs, rhs);
+    node->ty = lhs->ty->kind == TY_ARRAY ? pointer_to(lhs->ty->base) : lhs->ty;
+    return node;
+}
+
+// Builds a subtraction node with C pointer-arithmetic scaling
+static Node *new_sub(Node *lhs, Node *rhs, Token *tok) {
+    add_type(lhs);
+    add_type(rhs);
+
+    if (is_integer(lhs->ty) && is_integer(rhs->ty))
+        return new_node(ND_SUB, lhs, rhs);
+
+    if (lhs->ty->base && is_integer(rhs->ty)) {
+        rhs = new_node(ND_MUL, rhs, new_node_num(lhs->ty->base->size));
+        Node *node = new_node(ND_SUB, lhs, rhs);
+        node->ty = lhs->ty->kind == TY_ARRAY ? pointer_to(lhs->ty->base) : lhs->ty;
+        return node;
+    }
+
+    if (lhs->ty->base && rhs->ty->base) {
+        Node *node = new_node(ND_SUB, lhs, rhs);
+        node->ty = ty_int;
+        return new_node(ND_DIV, node, new_node_num(lhs->ty->base->size));
+    }
+
+    error_at(tok->loc, "invalid operands");
+    return NULL;
+}
+
+// type_suffix = ("[" num "]")*
+static Type *type_suffix(Type *ty) {
+    if (consume("[")) {
+        long sz = expect_number();
+        if (sz <= 0)
+            error_at(token->loc, "array size must be positive");
+        expect("]");
+        ty = type_suffix(ty);
+        return array_of(ty, (int)sz);
+    }
+    return ty;
+}
+
+// declaration = "int" declarator ("=" assign)? ("," declarator ("=" assign)?)* ";"
+static Node *declaration(void) {
+    Node head;
+    head.next = NULL;
+    Node *cur = &head;
+
+    int i = 0;
+    while (!consume(";")) {
+        if (i++ > 0)
+            expect(",");
+
+        Type *ty = ty_int;
+        while (consume("*"))
+            ty = pointer_to(ty);
+
+        if (token->kind != TK_IDENT)
+            error_at(token->loc, "expected a variable name");
+        Token *ident_tok = token;
+        token = token->next;
+
+        ty = type_suffix(ty);
+        if (find_var(ident_tok->loc, ident_tok->len))
+            error_at(ident_tok->loc, "redeclaration of variable");
+        Var *var = new_lvar(ident_tok->loc, ident_tok->len, ty);
+
+        if (!consume("="))
+            continue;
+
+        Node *lhs = new_node_var(var);
+        Node *rhs = assign();
+        Node *stmt_node = calloc(1, sizeof(Node));
+        stmt_node->kind = ND_EXPR_STMT;
+        stmt_node->lhs = new_node(ND_ASSIGN, lhs, rhs);
+        cur->next = stmt_node;
+        cur = cur->next;
+    }
+
+    Node *node = calloc(1, sizeof(Node));
+    node->kind = ND_BLOCK;
+    node->body = head.next;
+    return node;
+}
 
 // primary = "(" expr ")" | ident "(" (expr ("," expr)*)? ")" | ident | num
 static Node *primary(void) {
@@ -376,7 +601,7 @@ static Node *primary(void) {
     return new_node_num(expect_number());
 }
 
-// unary = ("+" | "-" | "&" | "*") unary | primary
+// unary = ("+" | "-" | "&" | "*" | "sizeof") unary | postfix
 static Node *unary(void) {
     if (consume("+"))
         return unary();
@@ -386,7 +611,25 @@ static Node *unary(void) {
         return new_node(ND_ADDR, unary(), NULL);
     if (consume("*"))
         return new_node(ND_DEREF, unary(), NULL);
-    return primary();
+    if (consume("sizeof")) {
+        Node *node = unary();
+        add_type(node);
+        return new_node_num(node->ty->size);
+    }
+    return postfix();
+}
+
+// postfix = primary ("[" expr "]")*
+static Node *postfix(void) {
+    Node *node = primary();
+
+    while (consume("[")) {
+        Token *tok = token;
+        Node *idx = expr();
+        expect("]");
+        node = new_node(ND_DEREF, new_add(node, idx, tok), NULL);
+    }
+    return node;
 }
 
 // mul = unary ("*" unary | "/" unary)*
@@ -408,10 +651,11 @@ static Node *add(void) {
     Node *node = mul();
 
     for (;;) {
+        Token *tok = token;
         if (consume("+"))
-            node = new_node(ND_ADD, node, mul());
+            node = new_add(node, mul(), tok);
         else if (consume("-"))
-            node = new_node(ND_SUB, node, mul());
+            node = new_sub(node, mul(), tok);
         else
             return node;
     }
@@ -506,7 +750,9 @@ static Node *stmt(void) {
         Node *node = calloc(1, sizeof(Node));
         node->kind = ND_FOR;
         expect("(");
-        if (!consume(";")) {
+        if (consume("int")) {
+            node->init = declaration();
+        } else if (!consume(";")) {
             node->init = expr();
             expect(";");
         }
@@ -520,6 +766,10 @@ static Node *stmt(void) {
         }
         node->then = stmt();
         return node;
+    }
+
+    if (consume("int")) {
+        return declaration();
     }
 
     if (consume("{")) {
@@ -593,9 +843,11 @@ static void gen_expr(Node *node) {
 
     case ND_VAR:
         gen_addr(node);
-        printf("  pop %%rax\n");
-        printf("  mov (%%rax), %%rax\n");
-        printf("  push %%rax\n");
+        if (node->ty->kind != TY_ARRAY) {
+            printf("  pop %%rax\n");
+            printf("  mov (%%rax), %%rax\n");
+            printf("  push %%rax\n");
+        }
         return;
 
     case ND_ASSIGN:
@@ -620,9 +872,11 @@ static void gen_expr(Node *node) {
 
     case ND_DEREF:
         gen_expr(node->lhs);
-        printf("  pop %%rax\n");
-        printf("  mov (%%rax), %%rax\n");
-        printf("  push %%rax\n");
+        if (node->ty->kind != TY_ARRAY) {
+            printf("  pop %%rax\n");
+            printf("  mov (%%rax), %%rax\n");
+            printf("  push %%rax\n");
+        }
         return;
 
     case ND_FUNCALL: {
@@ -788,8 +1042,12 @@ static void gen_stmt(Node *node) {
     case ND_FOR: {
         int seq = label_seq++;
         if (node->init) {
-            gen_expr(node->init);
-            printf("  pop %%rax\n");
+            if (node->init->kind == ND_BLOCK) {
+                gen_stmt(node->init);
+            } else {
+                gen_expr(node->init);
+                printf("  pop %%rax\n");
+            }
         }
         printf(".L.begin.%d:\n", seq);
         if (node->cond) {
@@ -870,11 +1128,12 @@ int main(int argc, char **argv) {
         stmts[nstmts++] = stmt();
     }
 
-    // Count locals and compute stack size (round up to 16-byte alignment)
-    int nlocals = 0;
-    for (Var *v = locals; v; v = v->next)
-        nlocals++;
-    int stack_size = ((nlocals * 8) + 15) & ~15; // align to 16 bytes
+    // Assign AST node types
+    for (int i = 0; i < nstmts; i++)
+        add_type(stmts[i]);
+
+    // Compute stack size from local variable allocations (round up to 16-byte alignment)
+    int stack_size = (locals_stack_bytes + 15) & ~15; // align to 16 bytes
 
     // Function prologue
     printf(".globl main\n");

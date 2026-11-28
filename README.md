@@ -54,6 +54,9 @@ Detailed architectural decisions, edge cases, and learnings are documented in th
 # Pointer address-of and dereference
 ./mibicc "x = 3; p = &x; *p = 42; return x;" > out.s
 
+# Arrays, pointer arithmetic, and sizeof
+./mibicc "int a[4]; for (int i = 0; i < 4; i = i + 1) a[i] = i * 10; return a[3];" > out.s
+
 # Specify a target ABI explicitly
 ./mibicc --target=linux "val = 10; if (val == 10) return add(20, 22); else return 0;" > out.s
 ./mibicc --target=windows "return win_add(20, 22);" > out.s
@@ -78,7 +81,7 @@ echo $?  # Outputs the evaluated result
 - [x] **Step 10:** Block statements `{ ... }`
 - [x] **Step 11:** Function calls with System V and Windows x64 calling conventions
 - [x] **Step 12:** Pointer operations and dereferencing (`&`, `*`)
-- [ ] **Step 13:** Pointer arithmetic and arrays
+- [x] **Step 13:** Pointer arithmetic and arrays (`int`, `[]`, `sizeof`)
 - [ ] **Step 14:** Structs, unions, and typedefs
 - [ ] **Step 15:** Self-hosting
 

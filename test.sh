@@ -302,4 +302,58 @@ assert_error "x = 1; &x = 5;"
 assert_error "3 = 5;"
 assert_error "x = 1; &&x;"
 
+# Declarations, pointer arithmetic, arrays, and sizeof (Step 13)
+assert 3  "int x; x = 3; return x;"
+assert 3  "int x = 3; return x;"
+assert 8  "int x = 3, y = 5; return x + y;"
+assert 3  "int x = 3, *p = &x; return *p;"
+assert 10 "int x = 3, *p = &x; *p = 10; return x;"
+assert 12 "integer = 7; sizeof_v = 5; return integer + sizeof_v;"
+
+# Typed pointer arithmetic (scaled by 8 bytes)
+assert 5  "int x = 3; int y = 5; int *p = &x; return *(p - 1);"
+assert 3  "int x = 3; int y = 5; int *p = &y; return *(p + 1);"
+assert 3  "int x = 3; int y = 5; int *p = &y; return *(1 + p);"
+assert 42 "int x = 3; int y = 5; int *p = &y; *(p + 1) = 42; return x;"
+assert 2  "int a[4]; int *p = a + 3; int *q = a + 1; return p - q;"
+assert 3  "int a[4]; return &a[3] - &a[0];"
+
+# 1D arrays and subscripting
+assert 3  "int a[2]; *a = 1; *(a + 1) = 2; int *p; p = a; return *p + *(p + 1);"
+assert 60 "int a[3]; a[0] = 10; a[1] = 20; a[2] = 30; return a[0] + a[1] + a[2];"
+assert 30 "int a[4]; for (int i = 0; i < 4; i = i + 1) a[i] = i * 10; return a[3];"
+assert 42 "int a[3]; a[2] = 42; return 2[a];"
+assert 99 "int a[3]; int *p = a; p[1] = 99; return a[1];"
+assert 33 "int x = 11, y = 22; int *ptrs[2]; ptrs[0] = &x; ptrs[1] = &y; return *ptrs[0] + *ptrs[1];"
+
+# Multi-dimensional arrays and array-pointer scaling
+assert 42 "int a[2][3]; int *p = a; *p = 0; *(p + 5) = 42; return a[1][2];"
+assert 10 "int a[2][3]; a[0][0] = 1; a[0][2] = 2; a[1][0] = 3; a[1][2] = 4; return a[0][0] + a[0][2] + a[1][0] + a[1][2];"
+assert 1  "int a[2][3]; return &a[1] - &a[0];"
+assert 4  "int a[4]; int *p = &a + 1; return p - a;"
+
+# sizeof operator
+assert 8  "int x; return sizeof(x);"
+assert 8  "int x; return sizeof x;"
+assert 8  "int *p; return sizeof(p);"
+assert 32 "int a[4]; return sizeof(a);"
+assert 8  "int a[4]; return sizeof(a + 0);"
+assert 48 "int a[2][3]; return sizeof(a);"
+assert 24 "int a[2][3]; return sizeof(a[0]);"
+assert 8  "int a[2][3]; return sizeof(a[0][0]);"
+assert 8  "return sizeof(1 + 2);"
+
+# Arrays passed to external C functions (Linux & Windows ABIs)
+assert 10 "int a[4]; a[0] = 1; a[1] = 2; a[2] = 3; a[3] = 4; return sum_long_arr(a, 4);"
+assert 27 "int a[4]; for (int i = 0; i < 4; i = i + 1) a[i] = i + 5; return 1 + sum_long_arr(a, 4);"
+assert_target 10 "windows" "int a[4]; a[0] = 1; a[1] = 2; a[2] = 3; a[3] = 4; return win_sum_long_arr(a, 4);"
+assert_target 27 "windows" "int a[4]; for (int i = 0; i < 4; i = i + 1) a[i] = i + 5; return 1 + win_sum_long_arr(a, 4);"
+
+# Step 13 error checks
+assert_error "int a[2]; a = 0;"
+assert_error "int x; int x;"
+assert_error "int a[0];"
+assert_error "int x; int y; return &x + &y;"
+assert_error "int x; return 1 - &x;"
+
 echo OK
