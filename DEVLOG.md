@@ -244,6 +244,33 @@ Under the Microsoft x64 ABI:
 ### Native Cross-ABI Verification:
 To verify Windows ABI code generation on Linux in CI and local testing, helper functions in `test_helpers.c` are decorated with `__attribute__((ms_abi))`. This causes GCC/Clang on Linux to compile test routines with the exact Microsoft x64 register allocation and shadow space requirements, validating cross-platform compatibility without needing a Windows host.
 
+---
+
+## 11. Pointer Operations (`&`, `*`) and Windows Stack-Arg Alignment Edge Case
+
+Step 12 adds unary address-of (`&`) and pointer dereference (`*`) operators (`ND_ADDR` and `ND_DEREF`), along with a subtle Windows x64 ABI alignment fix uncovered during regression testing.
+
+### Untyped Pointers as 64-Bit Addresses:
+Because `mibicc` has not yet introduced static type declarations (`int`, pointer types, `sizeof`), every local variable and pointer occupies a uniform 8-byte slot on the stack:
+- **`&` in Lexer & Parser**: `&` is added to the single-character punctuator set, and `unary()` handles both `&` (`ND_ADDR`) and `*` (`ND_DEREF`) right-associatively (`unary = ("+" | "-" | "&" | "*") unary | primary`).
+- **Precedence**: Unary `*` binds tighter than binary `*`, so `*p * *q` cleanly parses as `(*p) * (*q)`, and `-*p` parses as `-(*p)`.
+
+### Generalizing `gen_addr()` for Dereference Lvalues:
+Previously, `gen_addr()` only accepted `ND_VAR` and rejected every other node with `"not an lvalue"`. To support writing through pointers (`*p = 5`, `**q = 42`, `*identity_long(&x) = 77`):
+- **`ND_VAR` in `gen_addr()`**: Emits `lea offset(%rbp), %rax` and pushes the variable's stack address.
+- **`ND_DEREF` in `gen_addr()`**: Evaluates `node->lhs` via `gen_expr()`. Because a pointer expression already evaluates to a memory address on the stack, its rvalue *is* the target lvalue address.
+- **`ND_ADDR` in `gen_expr()`**: Simply calls `gen_addr(node->lhs)` and leaves the address on the stack; invalid targets like `&3`, `&(x + 1)`, or `&&x` still trigger `"not an lvalue"`.
+- **`ND_DEREF` in `gen_expr()`**: Evaluates `node->lhs` to get the address, pops it into `%rax`, loads the 64-bit value with `mov (%rax), %rax`, and pushes it back onto the stack.
+
+Because `ND_ASSIGN` delegates LHS resolution to `gen_addr(node->lhs)`, assignments through arbitrarily nested pointers (`**q = 42`) and function return values (`*identity_long(&x) = 77`) work without special cases.
+
+### Edge Case Fix: Misaligned Stack on Windows 5/6-Argument Calls:
+Regression testing `1 + win_sum6(1, 2, 3, 4, 5, 6)` exposed a bug in Step 11's Windows x64 `ND_FUNCALL` emission:
+- Evaluating `1` before the call pushes one 8-byte value, leaving `%rsp` at `8 (mod 16)` when `win_sum6` prepares its call frame.
+- Previously, `mibicc` subtracted `shadow_bytes` (`48`), stored arguments 5 and 6 at `32(%rsp)` and `40(%rsp)`, and *then* ran `test $15, %rsp` / `sub $8, %rsp` to align the stack.
+- That post-hoc `sub $8, %rsp` shifted the previously written 5th and 6th arguments to `40(%rsp)` and `48(%rsp)` right before `call`, causing the callee to read garbage from `32(%rsp)`!
+- **Fix**: Check `test $15, %rsp` *before* allocating the shadow space + stack argument area (`emit_win_call`), subtracting either `shadow_bytes` (aligned) or `shadow_bytes + 8` (misaligned) so `32(%rsp)` and `40(%rsp)` always match the exact ABI offsets immediately before `call`.
+
 
 
 

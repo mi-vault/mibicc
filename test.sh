@@ -37,6 +37,17 @@ assert_target() {
   fi
 }
 
+assert_error() {
+  input="$1"
+
+  if ./mibicc "$input" > tmp.s 2>/dev/null; then
+    echo "$input => expected compile error, but succeeded"
+    exit 1
+  else
+    echo "$input => compile error (as expected)"
+  fi
+}
+
 # Basic constants
 assert 0  "0;"
 assert 42 "42;"
@@ -242,5 +253,53 @@ assert_target 15 "windows" "sum = 0; for (i = 1; i <= 5; i = i + 1) sum = win_ad
 # Linux target explicit checks
 assert_target 42 "linux" "return ret42();"
 assert_target 21 "linux" "return sum6(1, 2, 3, 4, 5, 6);"
+
+# Edge cases for arithmetic, empty blocks, and stack-misaligned 5/6-arg calls
+assert 5  "10 + -10 / 2;"
+assert 5  "-10 / -2;"
+assert 42 "{ {} { return 42; } }"
+assert 42 "x = 42;; return x;"
+assert 16 "return 1 + sum5(1, 2, 3, 4, 5);"
+assert 22 "return 1 + sum6(1, 2, 3, 4, 5, 6);"
+assert_target 16 "windows" "return 1 + win_sum5(1, 2, 3, 4, 5);"
+assert_target 22 "windows" "return 1 + win_sum6(1, 2, 3, 4, 5, 6);"
+assert_target 22 "windows" "return 1 + win_sum6(1, 2, 3, 4, win_add(2, 3), win_sub(10, 4));"
+
+# Pointer operations and dereferencing (Step 12)
+assert 3  "x = 3; return *&x;"
+assert 3  "x = 3; return *(&x);"
+assert 3  "x = 3; p = &x; return *p;"
+assert 5  "x = 3; p = &x; *p = 5; return x;"
+assert 7  "x = 3; *&x = 7; return x;"
+assert 3  "x = 3; p = &x; q = &p; return **q;"
+assert 42 "x = 3; p = &x; q = &p; **q = 42; return x;"
+assert 12 "x = 9; p = &x; q = &p; r = &q; ***r = 12; return x;"
+assert 5  "x = 3; y = 5; p = &x; return *(p - 8);"
+assert 99 "x = 3; y = 5; p = &y; *(p + 8) = 99; return x;"
+assert 10 "x = 10; p = &x; return -*p + 20;"
+assert 35 "x = 5; y = 7; p = &x; q = &y; return *p * *q;"
+assert 42 "x = 42; p = &x; return *&*p;"
+assert 11 "x = 3; p = &x; q = &*p; *q = 11; return x;"
+assert 5  "x = 0; p = &x; while (*p < 5) *p = *p + 1; return x;"
+assert 20 "x = 10; p = &x; if (*p == 10) *p = 20; return x;"
+
+# Pointers with external function calls (Linux & Windows ABIs)
+assert 42 "x = 42; return deref_long(&x);"
+assert 55 "x = 10; write_long(&x, 55); return x;"
+assert 42 "x = 42; return *identity_long(&x);"
+assert 77 "x = 10; *identity_long(&x) = 77; return x;"
+assert 21 "x = 20; return 1 + deref_long(&x);"
+assert_target 42 "windows" "x = 42; return win_deref_long(&x);"
+assert_target 55 "windows" "x = 10; win_write_long(&x, 55); return x;"
+assert_target 42 "windows" "x = 42; return *win_identity_long(&x);"
+assert_target 77 "windows" "x = 10; *win_identity_long(&x) = 77; return x;"
+assert_target 21 "windows" "x = 20; return 1 + win_deref_long(&x);"
+
+# Invalid lvalue error checks
+assert_error "&3;"
+assert_error "x = 1; &(x + 1);"
+assert_error "x = 1; &x = 5;"
+assert_error "3 = 5;"
+assert_error "x = 1; &&x;"
 
 echo OK

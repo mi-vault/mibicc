@@ -57,6 +57,8 @@ typedef enum {
     ND_BLOCK,     // { ... } block
     ND_EXPR_STMT, // Expression statement
     ND_FUNCALL,   // Function call
+    ND_ADDR,      // Unary & (address-of)
+    ND_DEREF,     // Unary * (dereference)
 } NodeKind;
 
 // Local variable
@@ -246,8 +248,8 @@ static Token *tokenize(char *p) {
             continue;
         }
 
-        // Single-character punctuators (+, -, *, /, (, ), <, >, =, ;, {, }, ,)
-        if (strchr("+-*/()<>=;{},", *p)) {
+        // Single-character punctuators (+, -, *, /, (, ), <, >, =, ;, {, }, ,, &)
+        if (strchr("+-*/()<>=;{},&", *p)) {
             cur = new_token(TK_RESERVED, cur, p++, 1);
             continue;
         }
@@ -374,12 +376,16 @@ static Node *primary(void) {
     return new_node_num(expect_number());
 }
 
-// unary = ("+" | "-") unary | primary
+// unary = ("+" | "-" | "&" | "*") unary | primary
 static Node *unary(void) {
     if (consume("+"))
         return unary();
     if (consume("-"))
         return new_node(ND_NEG, unary(), NULL);
+    if (consume("&"))
+        return new_node(ND_ADDR, unary(), NULL);
+    if (consume("*"))
+        return new_node(ND_DEREF, unary(), NULL);
     return primary();
 }
 
@@ -543,12 +549,22 @@ static Node *stmt(void) {
     return node;
 }
 
-// Code generator: pushes the address of a variable onto the stack
+static void gen_expr(Node *node);
+static void gen_stmt(Node *node);
+
+// Code generator: pushes the address of an lvalue onto the stack
 static void gen_addr(Node *node) {
-    if (node->kind != ND_VAR)
+    switch (node->kind) {
+    case ND_VAR:
+        printf("  lea %d(%%rbp), %%rax\n", node->var->offset);
+        printf("  push %%rax\n");
+        return;
+    case ND_DEREF:
+        gen_expr(node->lhs);
+        return;
+    default:
         error("not an lvalue");
-    printf("  lea %d(%%rbp), %%rax\n", node->var->offset);
-    printf("  push %%rax\n");
+    }
 }
 
 static int label_seq = 0;
@@ -557,7 +573,16 @@ static int label_seq = 0;
 static char *argreg64_linux[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
 static char *argreg64_win[] = {"%rcx", "%rdx", "%r8", "%r9"};
 
-static void gen_stmt(Node *node);
+// Emits a Windows x64 ABI call with shadow space + optional 5th/6th stack args
+static void emit_win_call(Node *node, int alloc_bytes) {
+    printf("  sub $%d, %%rsp\n", alloc_bytes);
+    if (node->nargs >= 5)
+        printf("  mov %%r10, 32(%%rsp)\n");
+    if (node->nargs == 6)
+        printf("  mov %%r11, 40(%%rsp)\n");
+    printf("  call %s\n", node->funcname);
+    printf("  add $%d, %%rsp\n", alloc_bytes);
+}
 
 // Code generator: evaluates expression using a stack machine
 static void gen_expr(Node *node) {
@@ -586,6 +611,17 @@ static void gen_expr(Node *node) {
         gen_expr(node->lhs);
         printf("  pop %%rax\n");
         printf("  neg %%rax\n");
+        printf("  push %%rax\n");
+        return;
+
+    case ND_ADDR:
+        gen_addr(node->lhs);
+        return;
+
+    case ND_DEREF:
+        gen_expr(node->lhs);
+        printf("  pop %%rax\n");
+        printf("  mov (%%rax), %%rax\n");
         printf("  push %%rax\n");
         return;
 
@@ -628,22 +664,13 @@ static void gen_expr(Node *node) {
 
             int shadow_bytes = (node->nargs <= 4) ? 32 : 48;
 
-            printf("  sub $%d, %%rsp\n", shadow_bytes);
-            if (node->nargs >= 5)
-                printf("  mov %%r10, 32(%%rsp)\n");
-            if (node->nargs == 6)
-                printf("  mov %%r11, 40(%%rsp)\n");
-
             printf("  test $15, %%rsp\n");
             printf("  jnz .L.call.win.align.%d\n", seq);
-            printf("  call %s\n", node->funcname);
+            emit_win_call(node, shadow_bytes);
             printf("  jmp .L.call.win.end.%d\n", seq);
             printf(".L.call.win.align.%d:\n", seq);
-            printf("  sub $8, %%rsp\n");
-            printf("  call %s\n", node->funcname);
-            printf("  add $8, %%rsp\n");
+            emit_win_call(node, shadow_bytes + 8);
             printf(".L.call.win.end.%d:\n", seq);
-            printf("  add $%d, %%rsp\n", shadow_bytes);
             printf("  push %%rax\n");
             return;
         }
